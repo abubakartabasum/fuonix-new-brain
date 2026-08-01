@@ -1,0 +1,793 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUONIX SCR — MASTER VULNERABILITY DETECTION PATTERNS
+# Part 3 of 4: Auth · Crypto · Secrets · CSRF · Buffer Overflow · Race · Logging · Misc
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 14 — BROKEN AUTHENTICATION
+# ───────────────────────────────────────────────────────────────
+
+patterns:
+
+  - id: AUTH-001
+    name: "Hardcoded credentials in source"
+    cwe: 798
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go, csharp, c, cpp]
+    regex: '(?i)(?:password|passwd|secret|api_key|apikey|api_secret|access_token|auth_token|private_key|client_secret|passphrase)\s*[=:]+\s*["\'][^"\']{8,}["\']'
+    context_require: []
+    context_reject: ["os.environ", "process.env", "System.getenv", "getenv(", "config.", "settings.", "ENV[", "placeholder", "example", "changeme", "your-", "INSERT", "TODO", "xxx", "FIXME"]
+    fp_conditions:
+      - "Value is a placeholder or example string"
+      - "Value is read from environment variable or config file"
+      - "Shannon entropy of value is below 3.0"
+    description: "Hardcoded credential in source code — exposed in version control and binary."
+    remediation: "Move to environment variables or secrets manager (HashiCorp Vault, AWS Secrets Manager, Azure Key Vault)."
+
+  - id: AUTH-002
+    name: "JWT none algorithm acceptance"
+    cwe: 347
+    severity: CRITICAL
+    languages: [javascript, python, java, php, ruby, go]
+    regex: '(?i)(?:algorithm|alg)\s*[=:]+\s*["\']none["\']|algorithms\s*=\s*\[["\']none["\']\]'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "JWT library configured to accept 'none' algorithm — allows unsigned tokens, auth bypass."
+    remediation: "Never include 'none' in algorithm allowlist. Explicitly set allowed algorithms: RS256, ES256, or HS256."
+
+  - id: AUTH-003
+    name: "JWT secret weak or hardcoded"
+    cwe: 798
+    severity: HIGH
+    languages: [javascript, python, java, php, ruby]
+    regex: '(?i)(?:jwt\.sign|jwt\.encode|jwt_encode|sign\(|encode\()\s*\([^)]*,\s*["\'][^"\']{1,20}["\']'
+    context_require: []
+    context_reject: ["process.env", "os.environ", "config.", "getenv", "ENV["]
+    fp_conditions: ["Secret is loaded from environment or secrets manager"]
+    description: "JWT signed with a short or hardcoded secret — vulnerable to brute-force offline cracking."
+    remediation: "Use a randomly generated secret of at least 256 bits. Load from environment, never hardcode."
+
+  - id: AUTH-004
+    name: "JWT verification skipped (verify=False)"
+    cwe: 347
+    severity: CRITICAL
+    languages: [python, javascript]
+    regex: '(?i)(?:jwt\.decode|verify)\s*\([^)]*(?:verify\s*=\s*False|verify:\s*false|options\s*:\s*\{[^}]*verify\s*:\s*false)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "JWT decoded with signature verification disabled — token forgery is trivially possible."
+    remediation: "Never set verify=False in production. Always verify signature and validate claims (exp, iss, aud)."
+
+  - id: AUTH-005
+    name: "Password stored in plaintext"
+    cwe: 256
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go, csharp]
+    regex: '(?i)(?:password|passwd)\s*=\s*(?:request|req\.|param|input|user\.|data\[).*?(?:db\.|database\.|Model\.|INSERT|save\(\))'
+    context_require: []
+    context_reject: ["hash", "bcrypt", "argon", "scrypt", "pbkdf2", "sha256", "digest"]
+    fp_conditions: []
+    description: "Password appears to flow from input to storage without hashing."
+    remediation: "Hash passwords with bcrypt, Argon2id, or scrypt before storage. Never store plaintext."
+
+  - id: AUTH-006
+    name: "MD5 or SHA1 used for password hashing"
+    cwe: 916
+    severity: HIGH
+    languages: [python, php, javascript, java, ruby, go]
+    regex: '(?i)(?:md5|sha1|sha-1)\s*\(\s*\$?(?:password|passwd|pass|pwd|secret)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "MD5/SHA1 used for password hashing — these are fast hash functions, not password hash functions."
+    remediation: "Use bcrypt (cost >= 12), Argon2id, or scrypt. Never use MD5/SHA1/SHA256 for passwords."
+
+  - id: AUTH-007
+    name: "Timing-unsafe password/token comparison"
+    cwe: 208
+    severity: MEDIUM
+    languages: [python, javascript, php, java, ruby, go]
+    regex: '(?i)(?:token|password|secret|hash|digest|hmac|signature)\s*(?:==|!=|===|!==|\.equals\s*\()'
+    context_require: []
+    context_reject: ["hmac.compare_digest", "timingSafeEqual", "hash_equals", "ConstantTimeCompare", "MessageDigest.isEqual", "secure_compare"]
+    fp_conditions: ["Comparison is not on a security-sensitive value"]
+    description: "Security-sensitive string comparison using non-constant-time equality — timing oracle attack."
+    remediation: "Python: hmac.compare_digest(); Node.js: crypto.timingSafeEqual(); PHP: hash_equals(); Go: subtle.ConstantTimeCompare()"
+
+  - id: AUTH-008
+    name: "Insecure password reset — predictable token"
+    cwe: 640
+    severity: HIGH
+    languages: [python, javascript, php, ruby, java]
+    regex: '(?i)(?:reset_token|password_token|reset_link)\s*=\s*(?:str\(time|datetime|timestamp|uuid1|rand\(|Math\.random)'
+    context_require: []
+    context_reject: ["secrets.token", "crypto.randomBytes", "SecureRandom", "os.urandom", "random_bytes"]
+    fp_conditions: []
+    description: "Password reset token generated with time-based or weak random source — predictable tokens."
+    remediation: "Use cryptographically secure random: Python secrets.token_urlsafe(), Node.js crypto.randomBytes(), Java SecureRandom."
+
+  - id: AUTH-009
+    name: "Session fixation — session not regenerated after login"
+    cwe: 384
+    severity: HIGH
+    languages: [php, python, ruby, javascript, java]
+    regex: '(?i)(?:session_start|request\.session\[|\.session\[)\s*(?!.*?(?:session_regenerate_id|regenerate|new_session|invalidate\(\)))'
+    context_require: ["login", "authenticate", "signin", "password", "credentials"]
+    context_reject: ["session_regenerate_id", "regenerate", "new_session"]
+    fp_conditions: []
+    description: "Session started at login without regenerating session ID — session fixation attack."
+    remediation: "Call session_regenerate_id(true) in PHP, request.session.regenerate() in Node.js after successful auth."
+
+  - id: AUTH-010
+    name: "Missing authentication check on sensitive endpoint"
+    cwe: 306
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:@app\.route|router\.\w+|app\.\w+\s*\()\s*\(["\'][^"\']*(?:admin|user|account|profile|settings|dashboard|delete|update|create)["\']'
+    context_require: []
+    context_reject: ["@login_required", "@require_auth", "authenticate", "isAuthenticated", "requiresAuth", "middleware.*auth", "guard"]
+    fp_conditions: ["Route has auth middleware applied at router level (verify router-level middleware)"]
+    description: "Sensitive route defined without visible authentication decorator or middleware."
+    remediation: "Apply authentication middleware to all sensitive routes. Use framework-level auth guards."
+
+  - id: AUTH-011
+    name: "PHP type juggling authentication bypass"
+    cwe: 697
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)(?:hash|md5|sha1)\s*\([^)]+\)\s*==\s*(?:\$(?:_GET|_POST|_REQUEST|\w+)|["\'][0-9a-f]+["\'])'
+    context_require: []
+    context_reject: ["==="]
+    fp_conditions: []
+    description: "PHP loose comparison (==) of hash with user input — magic hash bypass (0e prefix collision)."
+    remediation: "Use strict comparison (===) and hash_equals() for hash comparisons. Never use == on hashes."
+
+  - id: AUTH-012
+    name: "Insecure remember-me cookie"
+    cwe: 539
+    severity: MEDIUM
+    languages: [python, php, javascript, ruby, java]
+    regex: '(?i)(?:remember_me|remember_token|persistent_cookie|stay_signed_in)\s*=\s*(?:username|user_id|email|md5|sha1)'
+    context_require: []
+    context_reject: ["hmac", "signed", "encrypted", "secure_compare"]
+    fp_conditions: []
+    description: "Remember-me token based on guessable user identifier or weak hash — token forgery."
+    remediation: "Use cryptographically random tokens stored in DB. Token = random_bytes(32) mapped to user in DB."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 15 — CRYPTOGRAPHIC FAILURES
+# ───────────────────────────────────────────────────────────────
+
+  - id: CRYPTO-001
+    name: "DES or 3DES usage"
+    cwe: 327
+    severity: HIGH
+    languages: [python, java, csharp, javascript, ruby, go, php]
+    regex: '(?i)(?:DES|TripleDES|3DES|DESede|Blowfish)\s*(?:\(|\.new\(|\.getInstance\()'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "DES/3DES symmetric cipher in use — broken (DES 56-bit) or deprecated (3DES) by NIST."
+    remediation: "Replace with AES-256-GCM. DES is banned by NIST SP 800-131A."
+
+  - id: CRYPTO-002
+    name: "AES ECB mode"
+    cwe: 327
+    severity: HIGH
+    languages: [python, java, csharp, javascript, ruby, go, php]
+    regex: '(?i)(?:AES|Cipher).*?(?:ECB|MODE_ECB|Cipher\.getInstance\s*\(\s*["\']AES/ECB)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "AES in ECB mode — does not provide semantic security, identical plaintext blocks produce identical ciphertext."
+    remediation: "Use AES-GCM (authenticated encryption) or at minimum AES-CBC with HMAC. Never use ECB."
+
+  - id: CRYPTO-003
+    name: "Hardcoded IV or nonce"
+    cwe: 330
+    severity: HIGH
+    languages: [python, java, javascript, php, ruby, go, csharp]
+    regex: '(?i)(?:IV|iv|nonce|initialization_vector)\s*=\s*(?:b["\'][^"\']{1,32}["\']|["\'][^"\']{1,32}["\']|\[0x)'
+    context_require: []
+    context_reject: ["os.urandom", "secrets.", "random_bytes", "SecureRandom", "crypto.randomBytes", "rand.Read"]
+    fp_conditions: []
+    description: "Hardcoded IV or nonce — reusing IV/nonce destroys security of CBC, CTR, and GCM modes."
+    remediation: "Generate IV/nonce with CSPRNG for every encryption operation. Store alongside ciphertext."
+
+  - id: CRYPTO-004
+    name: "Weak random for security-sensitive values"
+    cwe: 338
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:random\.random|random\.randint|Math\.random|rand\(\)|mt_rand|java\.util\.Random)'
+    context_require: ["token", "secret", "key", "nonce", "salt", "password", "otp", "csrf", "session", "reset", "verify"]
+    context_reject: ["secrets.", "crypto.randomBytes", "SecureRandom", "os.urandom", "rand.Read"]
+    fp_conditions: ["Used purely for non-security purposes like UI randomization or load balancing"]
+    description: "Non-cryptographic random function used to generate security-sensitive values."
+    remediation: "Python: secrets module; JS: crypto.randomBytes(); Java: SecureRandom; PHP: random_bytes()"
+
+  - id: CRYPTO-005
+    name: "RSA without OAEP padding"
+    cwe: 780
+    severity: HIGH
+    languages: [java, python, javascript, go, csharp]
+    regex: '(?i)(?:RSA/ECB/PKCS1Padding|RSA/ECB/NoPadding|Cipher\.getInstance\s*\(\s*["\']RSA["\'])'
+    context_require: []
+    context_reject: ["OAEP", "OAEPWithSHA"]
+    fp_conditions: []
+    description: "RSA encryption with PKCS#1 v1.5 or no padding — vulnerable to Bleichenbacher and similar attacks."
+    remediation: "Use RSA-OAEP with SHA-256: Cipher.getInstance('RSA/ECB/OAEPWithSHA-256AndMGF1Padding')"
+
+  - id: CRYPTO-006
+    name: "MD5 for security-sensitive operations"
+    cwe: 327
+    severity: HIGH
+    languages: [python, java, javascript, php, ruby, go, csharp]
+    regex: '(?i)(?:hashlib\.md5|MessageDigest\.getInstance\s*\(\s*["\']MD5|md5\s*\(|crypto\.createHash\s*\(\s*["\']md5)'
+    context_require: ["password", "token", "secret", "auth", "session", "csrf", "key", "credential", "signature", "mac", "hmac"]
+    context_reject: ["# checksum", "# etag", "# cache", "# fingerprint"]
+    fp_conditions: ["MD5 used only for non-security purposes: cache keys, ETags, file checksums"]
+    description: "MD5 used in a security-sensitive context — MD5 is cryptographically broken."
+    remediation: "Use SHA-256 or SHA-3 for hashing. Use HMAC-SHA256 for MACs. Use bcrypt/Argon2 for passwords."
+
+  - id: CRYPTO-007
+    name: "SHA1 for security-sensitive operations"
+    cwe: 327
+    severity: MEDIUM
+    languages: [python, java, javascript, php, ruby, go, csharp]
+    regex: '(?i)(?:hashlib\.sha1|MessageDigest\.getInstance\s*\(\s*["\']SHA-?1|sha1\s*\(|crypto\.createHash\s*\(\s*["\']sha1)'
+    context_require: ["password", "token", "secret", "auth", "session", "csrf", "key", "credential", "signature", "mac"]
+    context_reject: ["# checksum", "# git", "# etag"]
+    fp_conditions: ["SHA1 used only for non-security purposes or Git compatibility"]
+    description: "SHA1 used in security context — SHA1 has known collision attacks (SHAttered)."
+    remediation: "Replace with SHA-256 or SHA-3 for security use. SHA1 is deprecated by NIST for security use."
+
+  - id: CRYPTO-008
+    name: "TLS/SSL minimum version too low"
+    cwe: 326
+    severity: HIGH
+    languages: [python, java, javascript, go, csharp, ruby]
+    regex: '(?i)(?:SSLv2|SSLv3|TLSv1\.0|TLSv1_0|PROTOCOL_SSLv2|PROTOCOL_SSLv3|PROTOCOL_TLSv1\b|TLS_v1(?!_2|_3))'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "SSLv2, SSLv3, or TLS 1.0 explicitly enabled — known broken protocols."
+    remediation: "Enforce TLS 1.2 minimum (TLS 1.3 preferred). Disable SSLv2, SSLv3, TLS 1.0, and TLS 1.1."
+
+  - id: CRYPTO-009
+    name: "Certificate verification disabled"
+    cwe: 295
+    severity: HIGH
+    languages: [python, javascript, java, go, php, ruby]
+    regex: '(?i)(?:verify\s*=\s*False|rejectUnauthorized\s*:\s*false|CURLOPT_SSL_VERIFYPEER.*?0|InsecureSkipVerify\s*:\s*true|setSSLSocketFactory.*?AllTrustManager|TrustAllCerts)'
+    context_require: []
+    context_reject: ["# dev", "# test", "# local"]
+    fp_conditions: ["Explicitly in test/development configuration only — verify not present in prod"]
+    description: "TLS certificate verification disabled — vulnerable to MITM attacks."
+    remediation: "Never disable certificate verification in production. Use proper CA certificates."
+
+  - id: CRYPTO-010
+    name: "Predictable salt for password hashing"
+    cwe: 760
+    severity: HIGH
+    languages: [python, java, javascript, php, ruby]
+    regex: '(?i)(?:salt|bcrypt|pbkdf2)\s*.*?(?:username|email|user_id|["\'][^"\']{1,20}["\']|b["\'][^"\']{1,20}["\'])'
+    context_require: []
+    context_reject: ["os.urandom", "secrets.", "random_bytes", "SecureRandom", "crypto.randomBytes"]
+    fp_conditions: []
+    description: "Salt derived from user identifier or hardcoded — predictable salts enable precomputation attacks."
+    remediation: "Generate salt with CSPRNG: Python os.urandom(32), PHP random_bytes(32), JS crypto.randomBytes(32)."
+
+  - id: CRYPTO-011
+    name: "ECB mode for cookie/session data"
+    cwe: 327
+    severity: HIGH
+    languages: [python, javascript, php, java, ruby]
+    regex: '(?i)(?:cookie|session)\s*.*?(?:AES|DES).*?ECB|ECB.*?(?:cookie|session)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Session or cookie data encrypted with ECB mode — deterministic encryption leaks patterns."
+    remediation: "Use AES-GCM for session encryption. It provides both confidentiality and integrity."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 16 — HARDCODED SECRETS
+# ───────────────────────────────────────────────────────────────
+
+  - id: SECRET-001
+    name: "AWS Access Key hardcoded"
+    cwe: 798
+    severity: CRITICAL
+    languages: [all]
+    regex: '(?:AKIA|AIPA|AIDV|AROA|ASCA)[A-Z0-9]{16}'
+    context_require: []
+    context_reject: ["example", "EXAMPLEKEY", "AKIAIOSFODNN7EXAMPLE"]
+    fp_conditions: []
+    description: "AWS Access Key ID pattern detected in source — credential exposure in version control."
+    remediation: "Rotate the key immediately. Use IAM roles or AWS Secrets Manager. Add to .gitignore and pre-commit hooks."
+
+  - id: SECRET-002
+    name: "AWS Secret Key hardcoded"
+    cwe: 798
+    severity: CRITICAL
+    languages: [all]
+    regex: '(?i)(?:aws_secret|aws_secret_access_key)\s*[=:]+\s*["\'][A-Za-z0-9/+=]{40}["\']'
+    context_require: []
+    context_reject: ["example", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"]
+    fp_conditions: []
+    description: "AWS Secret Access Key hardcoded in source."
+    remediation: "Rotate immediately. Use AWS IAM roles or environment variables. Scan git history with git-secrets or truffleHog."
+
+  - id: SECRET-003
+    name: "Google API key hardcoded"
+    cwe: 798
+    severity: HIGH
+    languages: [all]
+    regex: 'AIza[0-9A-Za-z\-_]{35}'
+    context_require: []
+    context_reject: ["example", "YOUR_API_KEY"]
+    fp_conditions: []
+    description: "Google API key pattern detected — exposure enables quota theft or unauthorized API access."
+    remediation: "Restrict key in Google Cloud Console. Move to environment variable or secrets manager."
+
+  - id: SECRET-004
+    name: "GitHub personal access token hardcoded"
+    cwe: 798
+    severity: CRITICAL
+    languages: [all]
+    regex: 'gh[pousr]_[A-Za-z0-9_]{36,255}'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "GitHub personal access or OAuth token detected — enables repository access."
+    remediation: "Revoke token immediately on GitHub. Use GitHub Actions secrets or environment variables."
+
+  - id: SECRET-005
+    name: "Private RSA/PEM key hardcoded"
+    cwe: 321
+    severity: CRITICAL
+    languages: [all]
+    regex: '-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----'
+    context_require: []
+    context_reject: ["example", "test", "fake", "dummy"]
+    fp_conditions: []
+    description: "Private key directly embedded in source code — compromises all cryptographic operations using this key."
+    remediation: "Revoke and rotate the key. Store keys in hardware security modules or secrets managers. Never commit keys."
+
+  - id: SECRET-006
+    name: "Slack webhook URL hardcoded"
+    cwe: 798
+    severity: MEDIUM
+    languages: [all]
+    regex: 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Slack webhook URL in source — allows unauthorized message posting to Slack channels."
+    remediation: "Rotate the webhook in Slack. Move to environment variable."
+
+  - id: SECRET-007
+    name: "Stripe API key hardcoded"
+    cwe: 798
+    severity: CRITICAL
+    languages: [all]
+    regex: '(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Stripe secret key detected — allows unauthorized charges, refunds, and data access."
+    remediation: "Roll the key in Stripe Dashboard immediately. Use environment variables or Stripe's secrets management."
+
+  - id: SECRET-008
+    name: "SendGrid API key hardcoded"
+    cwe: 798
+    severity: HIGH
+    languages: [all]
+    regex: 'SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "SendGrid API key in source — allows sending emails as your domain."
+    remediation: "Revoke key in SendGrid. Move to environment variable."
+
+  - id: SECRET-009
+    name: "Generic high-entropy secret assignment"
+    cwe: 798
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go, csharp]
+    regex: '(?i)(?:secret|api_key|apikey|auth_token|access_token|private_key|client_secret)\s*[=:]+\s*["\'][A-Za-z0-9/+=_\-]{20,}["\']'
+    context_require: []
+    context_reject: ["os.environ", "process.env", "System.getenv", "getenv(", "config.", "settings.", "ENV[", "vault.", "secret_manager", "changeme", "placeholder", "example", "your-"]
+    fp_conditions:
+      - "Value loaded from environment or secrets manager"
+      - "Shannon entropy of value below 3.5"
+      - "Value is a placeholder/example"
+    description: "High-entropy string assigned to a security-sensitive variable name — likely hardcoded credential."
+    remediation: "Externalize to environment variable or secrets manager. Rotate the exposed value."
+
+  - id: SECRET-010
+    name: "Database connection string with password"
+    cwe: 798
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go, csharp]
+    regex: '(?i)(?:mongodb|mysql|postgresql|postgres|mssql|sqlite|redis|amqp)\s*://[^:]+:[^@]{3,}@'
+    context_require: []
+    context_reject: ["os.environ", "process.env", "getenv", "config.", "ENV[", "localhost:password"]
+    fp_conditions: ["Password in connection string is a placeholder or loaded from environment interpolation"]
+    description: "Database connection string with embedded password — credentials exposed in source."
+    remediation: "Use environment variable: DATABASE_URL=os.environ['DATABASE_URL']. Never embed creds in connection strings."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 17 — CSRF
+# ───────────────────────────────────────────────────────────────
+
+  - id: CSRF-001
+    name: "Django CSRF exempt on state-changing view"
+    cwe: 352
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)@csrf_exempt'
+    context_require: ["POST", "PUT", "DELETE", "PATCH", "update", "delete", "create", "save", "submit"]
+    context_reject: ["GET", "api", "webhook", "token", "Authorization"]
+    fp_conditions: ["Endpoint is an API with token-based auth and no cookie session — CSRF not applicable"]
+    description: "CSRF protection explicitly disabled on a state-changing endpoint."
+    remediation: "Remove @csrf_exempt. If API endpoint uses token auth (not cookies), document the reason."
+
+  - id: CSRF-002
+    name: "Flask WTF CSRF protection disabled"
+    cwe: 352
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)WTF_CSRF_ENABLED\s*=\s*False'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Flask-WTF CSRF protection globally disabled."
+    remediation: "Set WTF_CSRF_ENABLED = True. Use csrf.protect() or @csrf.exempt only where strictly needed."
+
+  - id: CSRF-003
+    name: "Express without CSRF middleware"
+    cwe: 352
+    severity: MEDIUM
+    languages: [javascript]
+    regex: '(?i)app\.(?:post|put|delete|patch)\s*\([^)]+(?:req|request)'
+    context_require: ["session", "cookie", "form"]
+    context_reject: ["csrf", "csurf", "lusca", "helmet", "Authorization", "Bearer"]
+    fp_conditions: ["Endpoint uses token-based auth with Authorization header — CSRF not applicable"]
+    description: "Express state-changing route without visible CSRF protection middleware."
+    remediation: "Add csurf middleware or use SameSite=Strict cookies combined with custom request headers."
+
+  - id: CSRF-004
+    name: "SameSite cookie attribute missing"
+    cwe: 352
+    severity: MEDIUM
+    languages: [python, javascript, php, java, ruby, go]
+    regex: '(?i)(?:Set-Cookie|set_cookie|response\.cookie|setCookie)\s*.*?(?!SameSite)'
+    context_require: ["session", "auth", "token", "login", "csrf"]
+    context_reject: ["SameSite", "samesite"]
+    fp_conditions: []
+    description: "Session/auth cookie set without SameSite attribute — CSRF vector in older browsers."
+    remediation: "Set SameSite=Strict or SameSite=Lax on all session cookies. Combine with CSRF tokens for defense-in-depth."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 18 — BUFFER OVERFLOW / MEMORY SAFETY (C/C++)
+# ───────────────────────────────────────────────────────────────
+
+  - id: BOF-001
+    name: "strcpy without bounds check"
+    cwe: 120
+    severity: HIGH
+    languages: [c, cpp]
+    regex: '\bstrcpy\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "strcpy() copies without length limit — destination buffer overflow if source is longer."
+    remediation: "Replace with strlcpy() or strncpy() with explicit length. Prefer C++ std::string."
+
+  - id: BOF-002
+    name: "gets() — unconditionally unsafe"
+    cwe: 242
+    severity: CRITICAL
+    languages: [c, cpp]
+    regex: '\bgets\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "gets() is unconditionally unsafe — no bounds checking. Removed from C11 standard."
+    remediation: "Replace with fgets(buf, sizeof(buf), stdin) immediately. gets() cannot be used safely."
+
+  - id: BOF-003
+    name: "sprintf without bounds check"
+    cwe: 120
+    severity: HIGH
+    languages: [c, cpp]
+    regex: '\bsprintf\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Only flag if format string contains %s or variable-length format specifiers"]
+    description: "sprintf() writes without length limit — buffer overflow if output exceeds destination size."
+    remediation: "Replace with snprintf(buf, sizeof(buf), fmt, ...) — always specify buffer size."
+
+  - id: BOF-004
+    name: "printf format string from user input"
+    cwe: 134
+    severity: HIGH
+    languages: [c, cpp]
+    regex: '(?i)\bprintf\s*\(\s*(?![\"\'](?:[^%]|%%)*[\"\']\s*[,)])\w'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Format string is a hardcoded string literal"]
+    description: "printf() with user-controlled format string — read arbitrary memory or write stack values."
+    remediation: "Always use: printf(\"%s\", user_input) — never printf(user_input)."
+
+  - id: BOF-005
+    name: "Integer overflow before malloc"
+    cwe: 190
+    severity: HIGH
+    languages: [c, cpp]
+    regex: '(?i)malloc\s*\(\s*\w+\s*\*\s*sizeof'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Multiplication result checked for overflow before malloc call"]
+    description: "malloc(n * sizeof(T)) — integer overflow in multiplication wraps to small allocation, then heap overflow on write."
+    remediation: "Use calloc(n, sizeof(T)) which handles overflow. Or check: if (n > SIZE_MAX / sizeof(T)) abort();"
+
+  - id: BOF-006
+    name: "Use after free"
+    cwe: 416
+    severity: HIGH
+    languages: [c, cpp]
+    regex: '(?i)\bfree\s*\(\s*(\w+)\s*\).*?\b\1\b'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Pointer set to NULL immediately after free()"]
+    description: "Pointer used after free() — undefined behavior, potential memory corruption or exploitation."
+    remediation: "Set pointer to NULL after free(): free(ptr); ptr = NULL; Check before subsequent use."
+
+  - id: BOF-007
+    name: "strcat without bounds check"
+    cwe: 120
+    severity: HIGH
+    languages: [c, cpp]
+    regex: '\bstrcat\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "strcat() appends without length limit — destination buffer overflow."
+    remediation: "Replace with strlcat() or track remaining buffer space explicitly."
+
+  - id: BOF-008
+    name: "memcpy with user-controlled length"
+    cwe: 120
+    severity: HIGH
+    languages: [c, cpp]
+    regex: '(?i)\bmemcpy\s*\(\s*\w+\s*,\s*\w+\s*,\s*(?!sizeof)\w'
+    context_require: ["user", "input", "recv", "read", "request", "param", "data"]
+    context_reject: []
+    fp_conditions: ["Length is validated against destination buffer size before memcpy call"]
+    description: "memcpy with user-controlled length parameter — buffer overflow if length unchecked."
+    remediation: "Validate: if (len > sizeof(dst)) abort(); before memcpy. Use bounds-checked alternatives."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 19 — RACE CONDITIONS
+# ───────────────────────────────────────────────────────────────
+
+  - id: RACE-001
+    name: "TOCTOU — check then use file"
+    cwe: 367
+    severity: MEDIUM
+    languages: [python, c, cpp, java, go]
+    regex: '(?i)(?:os\.access|access\s*\(|File\.exists|file_exists|os\.path\.exists)\s*\([^)]+\).*?(?:open|fopen|os\.open|FileInputStream)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "TOCTOU: file existence/permission checked before open — attacker can replace file between check and use."
+    remediation: "Open file directly with appropriate flags, handle errors. Don't check-then-act on filesystem state."
+
+  - id: RACE-002
+    name: "Non-atomic increment on shared counter"
+    cwe: 362
+    severity: MEDIUM
+    languages: [python, javascript, java, go, c, cpp]
+    regex: '(?i)(?:self\.\w+\s*\+=|this\.\w+\s*\+=|\w+\+\+)\s*(?!.*?(?:lock|mutex|synchronized|atomic|threading\.Lock|sync\.))'
+    context_require: ["thread", "concurrent", "async", "worker", "goroutine", "process"]
+    context_reject: ["lock(", "Lock(", "synchronized", "atomic", "threading.Lock", "Mutex"]
+    fp_conditions: ["Variable is not shared across threads/goroutines"]
+    description: "Non-atomic increment of a shared variable in concurrent context — race condition."
+    remediation: "Use atomic operations: Java AtomicInteger, Go sync/atomic, Python threading.Lock, JS single-threaded (no issue)."
+
+  - id: RACE-003
+    name: "Balance/quota check-then-deduct without transaction"
+    cwe: 362
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:balance|quota|limit|credits|tokens)\s*(?:>=|>|<|<=)\s*(?:amount|cost|price|value).*?(?:update|save|commit|deduct|subtract)'
+    context_require: []
+    context_reject: ["transaction", "BEGIN", "atomic", "SELECT.*FOR UPDATE", "with_lock", "lock_for_update"]
+    fp_conditions: []
+    description: "Balance checked then deducted in separate operations without a DB transaction — double-spend race condition."
+    remediation: "Use atomic DB transaction: SELECT ... FOR UPDATE, then deduct. Or use DB-level atomic decrement with WHERE balance >= amount."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 20 — SECURITY LOGGING FAILURES
+# ───────────────────────────────────────────────────────────────
+
+  - id: LOG-001
+    name: "Password or secret logged"
+    cwe: 532
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:log|logger|logging|console\.log|print)\s*.*?(?:password|passwd|secret|api_key|token|credential|private_key)'
+    context_require: []
+    context_reject: ["# redact", "masked", "\"***\"", "'***'", "redacted", "[REDACTED]"]
+    fp_conditions: ["Logged value is masked or redacted"]
+    description: "Sensitive credential or secret written to application log — log aggregation systems may expose it."
+    remediation: "Never log raw secrets. Log that an operation occurred, not the credential value. Use structured logging with field masking."
+
+  - id: LOG-002
+    name: "Log injection via user-controlled input"
+    cwe: 117
+    severity: MEDIUM
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:log|logger|logging|console\.log|logger\.info|logger\.warn|logger\.error)\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.|user_input|user\.)'
+    context_require: []
+    context_reject: ["escape", "sanitize", "strip", "replace.*\\n"]
+    fp_conditions: ["User input is sanitized to remove newlines and log injection chars before logging"]
+    description: "User input written directly to logs — log injection allows forging log entries or injecting fake records."
+    remediation: "Strip newlines from user-controlled values before logging. Use structured logging (JSON) where log injection is harmless."
+
+  - id: LOG-003
+    name: "No logging on authentication failure"
+    cwe: 778
+    severity: MEDIUM
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:authentication.*?(?:fail|error|invalid|wrong)|invalid.*?password|login.*?fail|auth.*?fail)'
+    context_require: []
+    context_reject: ["log", "logger", "audit", "record", "event"]
+    fp_conditions: []
+    description: "Authentication failure handler with no apparent logging — brute force undetected."
+    remediation: "Log all auth failures with IP, username (not password), timestamp. Alert on threshold breaches."
+
+  - id: LOG-004
+    name: "PII written to debug log"
+    cwe: 532
+    severity: MEDIUM
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:debug|logger\.debug|console\.debug|logging\.debug)\s*\([^)]*(?:email|phone|ssn|dob|address|credit_card|card_number|national_id)'
+    context_require: []
+    context_reject: ["masked", "redacted", "hashed"]
+    fp_conditions: []
+    description: "PII written to debug-level log — often enabled in production and retained in log aggregators."
+    remediation: "Mask PII before logging. Log record IDs not values. Ensure debug logging is disabled in production."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 21 — INSECURE DIRECT OBJECT REFERENCE (IDOR)
+# ───────────────────────────────────────────────────────────────
+
+  - id: IDOR-001
+    name: "Object fetched by user-supplied ID without ownership check"
+    cwe: 639
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:find_by_id|get_by_id|findById|getById|filter.*?id.*?=|WHERE.*?id\s*=\s*(?:\?|\$1|%s))\s*.*?(?:request|req\.|param|args|query|body)'
+    context_require: []
+    context_reject: ["user_id.*==.*current_user", "owner_id", "belongs_to.*current", "filter.*user.*current", "authorize", "policy"]
+    fp_conditions: ["Object is checked to belong to the authenticated user before returning"]
+    description: "Object fetched by ID from user input without verifying the requesting user owns it — IDOR."
+    remediation: "Always scope queries to the authenticated user: Record.where(id: params[:id], user_id: current_user.id)"
+
+  - id: IDOR-002
+    name: "File download by filename without authorization"
+    cwe: 639
+    severity: HIGH
+    languages: [python, javascript, php, java, ruby, go]
+    regex: '(?i)(?:send_file|sendFile|readFile|file_get_contents|download)\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)\w*(?:file|name|path|id|doc)'
+    context_require: []
+    context_reject: ["authorize", "permission", "access_control", "owned_by", "current_user"]
+    fp_conditions: []
+    description: "File served by user-supplied name/path/ID without ownership authorization check — IDOR."
+    remediation: "Map file IDs to DB records with user ownership. Verify requesting user owns the file before serving."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 22 — SECURITY MISCONFIGURATION
+# ───────────────────────────────────────────────────────────────
+
+  - id: MISCONFIG-001
+    name: "DEBUG mode enabled in production config"
+    cwe: 16
+    severity: MEDIUM
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:DEBUG\s*=\s*True|debug:\s*true|APP_DEBUG\s*=\s*true|development.*?mode)\s*(?!.*?(?:env|environ|getenv|process\.env))'
+    context_require: []
+    context_reject: ["os.environ", "process.env", "getenv", "ENV[", "config/development", ".env.dev"]
+    fp_conditions: ["Value is loaded from environment variable (not hardcoded)"]
+    description: "Debug mode hardcoded to enabled — may expose stack traces, configs, and debug endpoints in production."
+    remediation: "Load from environment: DEBUG = os.environ.get('DEBUG', 'False') == 'True'. Never hardcode True."
+
+  - id: MISCONFIG-002
+    name: "CORS allow all origins"
+    cwe: 16
+    severity: HIGH
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:Access-Control-Allow-Origin|allow_origins|cors_origins)\s*[=:]+\s*["\']?\*["\']?'
+    context_require: []
+    context_reject: ["credentials.*false", "# public api"]
+    fp_conditions: ["API is fully public with no authentication — CORS * is acceptable"]
+    description: "CORS wildcard allows any origin to make cross-origin requests — combined with credentials enables CSRF-like attacks."
+    remediation: "Specify explicit origin allowlist. Never use * with credentials: true. Use environment-based origin config."
+
+  - id: MISCONFIG-003
+    name: "Security headers missing (X-Frame-Options, CSP, etc.)"
+    cwe: 16
+    severity: LOW
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:X-Frame-Options|Content-Security-Policy|X-Content-Type-Options|Strict-Transport-Security)\s*.*?(?:ALLOW|allow-from\s*\*)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Permissive or missing security headers — enables clickjacking, MIME sniffing, or protocol downgrade."
+    remediation: "Set: X-Frame-Options: DENY, X-Content-Type-Options: nosniff, HSTS with includeSubDomains, CSP policy."
+
+  - id: MISCONFIG-004
+    name: "Server version disclosure"
+    cwe: 200
+    severity: LOW
+    languages: [python, javascript, java, php, ruby, go]
+    regex: '(?i)(?:Server|X-Powered-By|X-AspNet-Version)\s*:\s*(?:Apache|nginx|IIS|Express|PHP|Tomcat|Jetty)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Server technology and version disclosed in response headers — aids fingerprinting."
+    remediation: "Remove or neutralize Server and X-Powered-By headers in web server and framework config."
+
+  - id: MISCONFIG-005
+    name: "Overly permissive file upload"
+    cwe: 434
+    severity: HIGH
+    languages: [python, javascript, php, java, ruby, go]
+    regex: '(?i)(?:upload|file_upload|multipart).*?(?!.*?(?:mimetype|content_type|extension|whitelist|allowedTypes))'
+    context_require: ["save", "write", "store", "upload"]
+    context_reject: ["allowedExtensions", "whitelist", "mimeType", "content_type", "magic_bytes"]
+    fp_conditions: ["File type validated by magic bytes and content-type with strict allowlist"]
+    description: "File upload handler with no visible content-type or extension validation."
+    remediation: "Validate magic bytes (not just MIME type), enforce extension allowlist, store outside webroot, rename on save."
+
+  - id: MISCONFIG-006
+    name: "HTTP used instead of HTTPS for sensitive operations"
+    cwe: 319
+    severity: HIGH
+    languages: [all]
+    regex: '(?i)http://(?!localhost|127\.0\.0\.1|0\.0\.0\.0).*?(?:login|auth|password|payment|checkout|account|admin|api)'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["In test/development environment only"]
+    description: "Sensitive endpoint using HTTP — credentials and data transmitted in plaintext."
+    remediation: "Enforce HTTPS for all endpoints. Redirect HTTP to HTTPS. Set HSTS header."
+
+  - id: MISCONFIG-007
+    name: "Cookie without HttpOnly or Secure flag"
+    cwe: 614
+    severity: MEDIUM
+    languages: [python, javascript, php, java, ruby, go]
+    regex: '(?i)(?:Set-Cookie|set_cookie|response\.cookie|setCookie)\s*.*?(?:session|auth|token|login)'
+    context_require: []
+    context_reject: ["HttpOnly", "httponly", "Secure", "secure"]
+    fp_conditions: []
+    description: "Session or auth cookie set without HttpOnly and Secure flags — accessible to JS and sent over HTTP."
+    remediation: "Always set HttpOnly and Secure on session cookies. Add SameSite=Strict for CSRF protection."
+
+  - id: MISCONFIG-008
+    name: "Mass assignment — model accepts all params"
+    cwe: 915
+    severity: HIGH
+    languages: [ruby, php, python, javascript, java]
+    regex: '(?i)(?:\.fill\s*\(\s*\$request->all\(\)|params\.permit!|update_attributes\s*\(params\[|update\s*\(request\.POST\))'
+    context_require: []
+    context_reject: ["permit(:", "fillable", "strong_parameters"]
+    fp_conditions: []
+    description: "Mass assignment with unfiltered user input — allows setting protected fields like role, admin, balance."
+    remediation: "Define explicit field allowlists. Rails: params.require(:user).permit(:name, :email). Laravel: $fillable array."
+

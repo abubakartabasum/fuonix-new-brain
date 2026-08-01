@@ -1,0 +1,646 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUONIX SCR — MASTER VULNERABILITY DETECTION PATTERNS
+# Part 2 of 4: XSS · XXE · Path Traversal · SSRF · Open Redirect · Deserialization
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 8 — CROSS-SITE SCRIPTING (XSS)
+# ───────────────────────────────────────────────────────────────
+
+patterns:
+
+  - id: XSS-001
+    name: "React dangerouslySetInnerHTML with user data"
+    cwe: 79
+    severity: HIGH
+    languages: [javascript]
+    regex: 'dangerouslySetInnerHTML\s*=\s*\{\s*\{\s*__html\s*:\s*(?!DOMPurify\.sanitize)'
+    context_require: []
+    context_reject: ["DOMPurify", "sanitize", "escape"]
+    fp_conditions: ["Value is wrapped in DOMPurify.sanitize() or equivalent"]
+    description: "React dangerouslySetInnerHTML without sanitization — stored or reflected XSS."
+    remediation: "Wrap value: __html: DOMPurify.sanitize(userContent) — or redesign to avoid raw HTML entirely."
+
+  - id: XSS-002
+    name: "JavaScript innerHTML with user data"
+    cwe: 79
+    severity: HIGH
+    languages: [javascript]
+    regex: '\.innerHTML\s*=\s*(?![\"\'][^\"\']*[\"\']\s*;)'
+    context_require: ["location", "document", "window", "req", "request", "param", "input", "user", "data", "query", "search", "hash", "href"]
+    context_reject: ["DOMPurify", "sanitize", "escape", "encodeHTML", "textContent"]
+    fp_conditions: ["Value is a static string with no user-controlled data"]
+    description: "DOM innerHTML assignment with user-controlled value — classic DOM XSS."
+    remediation: "Use textContent for plain text. For HTML, sanitize with DOMPurify before assigning innerHTML."
+
+  - id: XSS-003
+    name: "JavaScript document.write with user data"
+    cwe: 79
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)document\.write\s*\([^)]*(?:location|document\.URL|document\.referrer|window\.name|document\.cookie|req\.|request\.|param|query|user)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "document.write() with URL or request-derived content — DOM XSS."
+    remediation: "Avoid document.write(). Use DOM APIs with textContent or sanitized innerHTML."
+
+  - id: XSS-004
+    name: "Python Flask render with user data in template"
+    cwe: 79
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)render_template\s*\([^)]*\)\s*.*?Markup\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Flask Markup() marks string as safe HTML, bypassing Jinja2 auto-escaping — XSS if user-controlled."
+    remediation: "Never wrap user input with Markup(). Let Jinja2 auto-escape handle output."
+
+  - id: XSS-005
+    name: "PHP echo/print with unsanitized variable"
+    cwe: 79
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)(?:echo|print)\s+\$(?:_GET|_POST|_REQUEST|_COOKIE|_SERVER)\s*\['
+    context_require: []
+    context_reject: ["htmlspecialchars(", "htmlentities(", "strip_tags(", "nl2br(htmlspecialchars"]
+    fp_conditions: ["Output goes through htmlspecialchars() with ENT_QUOTES"]
+    description: "PHP echo/print of raw superglobal user input — reflected XSS."
+    remediation: "Always wrap output: echo htmlspecialchars($_GET['x'], ENT_QUOTES, 'UTF-8');"
+
+  - id: XSS-006
+    name: "PHP htmlspecialchars without ENT_QUOTES"
+    cwe: 79
+    severity: MEDIUM
+    languages: [php]
+    regex: '(?i)htmlspecialchars\s*\(\s*[^,)]+\s*\)'
+    context_require: []
+    context_reject: ["ENT_QUOTES", "ENT_HTML5"]
+    fp_conditions: ["Output is used in a context where attribute quoting is not needed (text nodes only)"]
+    description: "htmlspecialchars() without ENT_QUOTES — bypassed in unquoted HTML attribute context."
+    remediation: "Always use ENT_QUOTES: htmlspecialchars($val, ENT_QUOTES, 'UTF-8')"
+
+  - id: XSS-007
+    name: "Express res.send with user input"
+    cwe: 79
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)res\.send\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)'
+    context_require: []
+    context_reject: ["escape(", "encodeHTML(", "sanitize(", "DOMPurify"]
+    fp_conditions: ["Response Content-Type is application/json — XSS not applicable in pure JSON responses"]
+    description: "Express response sends user input as HTML content — reflected XSS if Content-Type is text/html."
+    remediation: "Set Content-Type: application/json for API responses. Sanitize any HTML response with DOMPurify or he."
+
+  - id: XSS-008
+    name: "Angular bypassSecurityTrustHtml"
+    cwe: 79
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)bypassSecurityTrust(?:Html|Script|Style|Url|ResourceUrl)\s*\('
+    context_require: ["user", "input", "param", "request", "http", "service", "api", "data", "response"]
+    context_reject: []
+    fp_conditions: ["Value is a hardcoded string with no user-controlled data"]
+    description: "Angular DomSanitizer bypass with user-controlled content — disables XSS protection."
+    remediation: "Avoid bypassSecurityTrust*() with user data. Use Angular's built-in sanitization pipeline."
+
+  - id: XSS-009
+    name: "Vue v-html directive with user data"
+    cwe: 79
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)v-html\s*=\s*["\'][^"\']*(?:user|input|param|data|content|html|raw)'
+    context_require: []
+    context_reject: ["DOMPurify", "sanitize"]
+    fp_conditions: []
+    description: "Vue v-html with user-controlled binding — Vue does not sanitize v-html content."
+    remediation: "Sanitize with DOMPurify before binding: v-html=\"sanitize(userContent)\" where sanitize = DOMPurify.sanitize"
+
+  - id: XSS-010
+    name: "DOM location.hash/search used in innerHTML"
+    cwe: 79
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)(?:location\.(?:hash|search|href)|document\.referrer|window\.name)\s*.*?(?:innerHTML|outerHTML|document\.write|eval)'
+    context_require: []
+    context_reject: ["decodeURIComponent", "encodeHTML", "DOMPurify", "sanitize"]
+    fp_conditions: []
+    description: "URL-derived value (hash, search, referrer) flows into an unsafe DOM sink — DOM XSS."
+    remediation: "Parse URL parameters safely and use textContent for display. Sanitize any HTML with DOMPurify."
+
+  - id: XSS-011
+    name: "JavaScript eval() on location data"
+    cwe: 79
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)eval\s*\(\s*(?:location\.|document\.URL|document\.referrer|window\.name|atob\()'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "eval() on URL-controlled data — DOM-based XSS with code execution."
+    remediation: "Never eval() URL-derived data. Use JSON.parse() for data, function references for callbacks."
+
+  - id: XSS-012
+    name: "Stored XSS — DB value rendered without escape"
+    cwe: 79
+    severity: HIGH
+    languages: [python, php, ruby, java, javascript]
+    regex: '(?i)(?:row\[|result\[|record\[|fetch\[|data\[|rs\.getString|getattr\(obj).*?(?:innerHTML|echo\s+\$|print\s+\$|res\.send|render|Response\.Write)'
+    context_require: []
+    context_reject: ["escape(", "htmlspecialchars(", "encode(", "sanitize(", "DOMPurify", "h("]
+    fp_conditions: []
+    description: "Database result rendered into HTML without output encoding — stored XSS pattern."
+    remediation: "Always HTML-encode data from database before rendering in HTML context."
+
+  - id: XSS-013
+    name: "JSON response with Content-Type text/html"
+    cwe: 79
+    severity: MEDIUM
+    languages: [python, javascript, php, java]
+    regex: '(?i)Content-Type.*text/html.*json|json.*Content-Type.*text/html'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "JSON data served with text/html Content-Type — browser may render as HTML, enabling XSS."
+    remediation: "Always set Content-Type: application/json for JSON API responses."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 9 — XML EXTERNAL ENTITY (XXE)
+# ───────────────────────────────────────────────────────────────
+
+  - id: XXE-001
+    name: "Java DocumentBuilderFactory without external entity disabled"
+    cwe: 611
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)DocumentBuilderFactory\.newInstance\s*\(\s*\)'
+    context_require: []
+    context_reject: ["setFeature.*EXTERNAL_ENTITY.*false", "setFeature.*DOCTYPE.*false", "setExpandEntityReferences.*false"]
+    fp_conditions: ["External entity features explicitly disabled via setFeature()"]
+    description: "Java XML parser without XXE protections — external entity injection reads local files or SSRF."
+    remediation: |
+      dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+      dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+      dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+
+  - id: XXE-002
+    name: "Java SAXParserFactory without XXE protection"
+    cwe: 611
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)SAXParserFactory\.newInstance\s*\(\s*\)'
+    context_require: []
+    context_reject: ["setFeature.*external.*false", "setFeature.*DOCTYPE.*false"]
+    fp_conditions: []
+    description: "SAX parser without external entity controls — XXE if parsing user-supplied XML."
+    remediation: "Disable DOCTYPE and external entities on SAXParserFactory before creating parser."
+
+  - id: XXE-003
+    name: "Python lxml etree.parse without resolve_entities=False"
+    cwe: 611
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)(?:lxml\.etree|etree)\.(?:parse|fromstring|XML)\s*\('
+    context_require: []
+    context_reject: ["resolve_entities=False", "no_network=True", "XMLParser"]
+    fp_conditions: ["Using lxml.etree.XMLParser with resolve_entities=False"]
+    description: "Python lxml parsing without restricting entity resolution — XXE if user XML parsed."
+    remediation: "parser = lxml.etree.XMLParser(resolve_entities=False, no_network=True); etree.parse(src, parser)"
+
+  - id: XXE-004
+    name: "Python xml.etree.ElementTree (no XXE protection)"
+    cwe: 611
+    severity: MEDIUM
+    languages: [python]
+    regex: '(?i)(?:xml\.etree\.ElementTree|ET)\.(?:parse|fromstring|XML)\s*\('
+    context_require: ["request", "user", "input", "file", "upload", "body", "data", "param"]
+    context_reject: []
+    fp_conditions: ["Python 3.8+ ElementTree has XXE protection enabled by default — verify version"]
+    description: "Python xml.etree.ElementTree — older versions vulnerable to XXE; verify Python version."
+    remediation: "Use defusedxml library: import defusedxml.ElementTree as ET — safe by default."
+
+  - id: XXE-005
+    name: "PHP simplexml_load_string/file without libxml options"
+    cwe: 611
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)simplexml_load_(?:string|file)\s*\([^)]*\)'
+    context_require: []
+    context_reject: ["LIBXML_NOENT.*false", "LIBXML_DTDLOAD.*false"]
+    fp_conditions: []
+    description: "PHP SimpleXML without disabling entity loading — XXE on user-supplied XML."
+    remediation: "libxml_disable_entity_loader(true); before loading. Or use LIBXML_NOENT=0 flag explicitly."
+
+  - id: XXE-006
+    name: "PHP DOMDocument loadXML without entity control"
+    cwe: 611
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)\$(?:dom|doc|xml)\s*=\s*new\s+DOMDocument.*?->loadXML\s*\('
+    context_require: []
+    context_reject: ["libxml_disable_entity_loader"]
+    fp_conditions: []
+    description: "PHP DOMDocument::loadXML() without disabling external entity loader."
+    remediation: "Call libxml_disable_entity_loader(true) before any XML parsing in PHP < 8.0."
+
+  - id: XXE-007
+    name: "Node.js libxmljs without noent"
+    cwe: 611
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)libxmljs\.parseXml\s*\('
+    context_require: []
+    context_reject: ["noent.*false", "dtdload.*false"]
+    fp_conditions: []
+    description: "libxmljs.parseXml() without disabling entity expansion — XXE vector."
+    remediation: "libxmljs.parseXml(xml, {noent: false, dtdload: false, dtdvalid: false})"
+
+  - id: XXE-008
+    name: "Java XPathFactory without XXE protection"
+    cwe: 611
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)XPathFactory\.newInstance\s*\(\s*\)'
+    context_require: []
+    context_reject: ["setFeature.*external.*false"]
+    fp_conditions: []
+    description: "XPathFactory without entity protections — XXE when evaluating XPath on user XML."
+    remediation: "Disable external entities on the underlying DocumentBuilderFactory before use with XPath."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 10 — PATH TRAVERSAL
+# ───────────────────────────────────────────────────────────────
+
+  - id: PATH-001
+    name: "Python open() with user-controlled path"
+    cwe: 22
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)\bopen\s*\(\s*(?:f["\']|os\.path\.join\s*\([^)]*(?:request|param|input|user|argv)|(?:request|param|input|user|argv|data)\s*(?:\[|\.)'
+    context_require: []
+    context_reject: ["os.path.realpath", "os.path.abspath", "pathlib.Path", "resolve("]
+    fp_conditions: ["Path resolved with realpath() and then checked against an allowed directory prefix"]
+    description: "Python file open with user-controlled path — directory traversal via ../ sequences."
+    remediation: |
+      safe_base = '/app/uploads'
+      requested = os.path.realpath(os.path.join(safe_base, user_path))
+      if not requested.startswith(safe_base):
+          raise PermissionError('Path traversal detected')
+
+  - id: PATH-002
+    name: "Node.js fs.readFile with user path"
+    cwe: 22
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)fs\.(?:readFile|readFileSync|createReadStream)\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)'
+    context_require: []
+    context_reject: ["path.resolve", "path.normalize", "path.join.*__dirname"]
+    fp_conditions: ["Path is validated against a whitelist after normalization with path.resolve()"]
+    description: "Node.js file read with user-controlled path from request — path traversal."
+    remediation: |
+      const safePath = path.resolve('/app/files', userInput);
+      if (!safePath.startsWith('/app/files')) throw new Error('Path traversal');
+      fs.readFile(safePath, ...);
+
+  - id: PATH-003
+    name: "PHP file_get_contents / include with user path"
+    cwe: 22
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)(?:file_get_contents|file_put_contents|include|require|readfile|fopen)\s*\(\s*(?:[^"\'(]|\$(?:_GET|_POST|_REQUEST|\w+))'
+    context_require: []
+    context_reject: ["realpath(", "basename(", "__DIR__"]
+    fp_conditions: ["Path is built from a fixed prefix with only basename of user input"]
+    description: "PHP file operation with user-supplied path — LFI, RFI, or path traversal."
+    remediation: "Use basename() to strip path components and prefix with a fixed directory. Validate against whitelist."
+
+  - id: PATH-004
+    name: "Java new File() with user path"
+    cwe: 22
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)new\s+File\s*\([^)]*(?:request\.getParameter|getHeader|getBody|param)'
+    context_require: []
+    context_reject: ["getCanonicalPath", "toRealPath", "startsWith.*basePath"]
+    fp_conditions: []
+    description: "Java File object constructed with user-controlled path — path traversal."
+    remediation: |
+      File baseDir = new File("/app/uploads");
+      File file = new File(baseDir, userInput).getCanonicalFile();
+      if (!file.toPath().startsWith(baseDir.toPath())) throw new SecurityException();
+
+  - id: PATH-005
+    name: "Go ioutil.ReadFile with user path"
+    cwe: 22
+    severity: HIGH
+    languages: [go]
+    regex: '(?i)(?:ioutil\.ReadFile|os\.Open|os\.Create)\s*\(\s*(?:r\.(?:URL\.|Form\.|FormValue|PathValue)|req\.\w+)'
+    context_require: []
+    context_reject: ["filepath.Clean", "filepath.Abs"]
+    fp_conditions: []
+    description: "Go file operation with user-controlled path from HTTP request."
+    remediation: |
+      clean := filepath.Clean(filepath.Join("/app/files", userInput))
+      if !strings.HasPrefix(clean, "/app/files") { http.Error(...) }
+
+  - id: PATH-006
+    name: "Zip Slip — archive extraction with user path"
+    cwe: 22
+    severity: HIGH
+    languages: [python, java, javascript, go, php]
+    regex: '(?i)(?:zipfile\.ZipFile|ZipEntry|unzip|extractall|tar\.extractall|AdmZip|yauzl).*?(?:extract|open|getInputStream)'
+    context_require: []
+    context_reject: ["canonical", "realpath", "startsWith.*base"]
+    fp_conditions: ["Extraction path validated against base directory after normalization"]
+    description: "Archive extraction without path validation — Zip Slip allows writing files outside target directory."
+    remediation: "Validate each entry's resolved path against the extraction base directory before extracting."
+
+  - id: PATH-007
+    name: "Path traversal via URL-encoded sequences"
+    cwe: 22
+    severity: HIGH
+    languages: [python, php, java, javascript, go]
+    regex: '(?i)(?:\.\./|\.\.\\\\|%2e%2e%2f|%2e%2e/|\.\.%2f|%252e%252e)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Encoded path traversal sequences in code or test data — verify they don't reach file operations."
+    remediation: "Normalize paths before any validation. Reject inputs containing .. after URL decoding."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 11 — SERVER-SIDE REQUEST FORGERY (SSRF)
+# ───────────────────────────────────────────────────────────────
+
+  - id: SSRF-001
+    name: "Python requests.get with user-controlled URL"
+    cwe: 918
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)requests\.(?:get|post|put|delete|head|request)\s*\(\s*(?![\"\'][^\"\']*[\"\']\s*[,)])'
+    context_require: ["request", "param", "input", "user", "data", "body", "args", "url", "href", "endpoint", "target", "dest"]
+    context_reject: ["urlparse", "allowed_hosts", "whitelist", "denylist"]
+    fp_conditions: ["URL validated against allowlist of approved hosts before the request"]
+    description: "Python requests library fetching user-controlled URL — SSRF to internal network or cloud metadata."
+    remediation: "Validate URL against strict allowlist. Block private IP ranges (10.x, 172.16.x, 192.168.x, 169.254.x). Use DNS rebinding protection."
+
+  - id: SSRF-002
+    name: "Node.js http/https.get with user URL"
+    cwe: 918
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)(?:https?|axios|fetch|got|superagent|node-fetch)\.(?:get|post|request)\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)\w*(?:url|Url|URL|href|endpoint|target|dest|host)'
+    context_require: []
+    context_reject: ["allowedHosts", "whitelist", "denylist", "validateUrl"]
+    fp_conditions: []
+    description: "Node.js HTTP client fetching user-controlled URL — SSRF."
+    remediation: "Validate URL against allowlist. Block private/loopback/metadata IPs. Use ssrf-filter npm package."
+
+  - id: SSRF-003
+    name: "Java URL.openConnection with user input"
+    cwe: 918
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)new\s+URL\s*\([^)]*(?:request\.getParameter|getHeader|body|param)\s*[^)]*\)\.openConnection'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Java URL.openConnection() with user-controlled URL — SSRF."
+    remediation: "Parse URL and validate host against allowlist. Block private IP ranges before connection."
+
+  - id: SSRF-004
+    name: "PHP curl_exec with user URL"
+    cwe: 918
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)curl_setopt\s*\(\s*\$\w+\s*,\s*CURLOPT_URL\s*,\s*\$(?:_GET|_POST|_REQUEST|\w+)'
+    context_require: []
+    context_reject: ["filter_var.*FILTER_VALIDATE_URL", "whitelist", "allowed_hosts"]
+    fp_conditions: []
+    description: "PHP cURL with user-controlled URL — SSRF to internal services or cloud metadata."
+    remediation: "Validate URL scheme (https only), resolve hostname, block private ranges. Never allow file:// or gopher://."
+
+  - id: SSRF-005
+    name: "PHP file_get_contents with URL and user input"
+    cwe: 918
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)file_get_contents\s*\(\s*(?:https?://|\$(?:_GET|_POST|_REQUEST|\w+))'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP file_get_contents() fetching a URL with user-controlled host — SSRF."
+    remediation: "Disable allow_url_fopen for file_get_contents. Use cURL with strict host validation instead."
+
+  - id: SSRF-006
+    name: "Cloud metadata endpoint access pattern"
+    cwe: 918
+    severity: CRITICAL
+    languages: [python, javascript, go, java, php, ruby]
+    regex: '(?i)169\.254\.169\.254|metadata\.google\.internal|metadata\.azure\.com|100\.100\.100\.200'
+    context_require: []
+    context_reject: ["# test", "# doc", "example"]
+    fp_conditions: ["In documentation, comments, or test files only"]
+    description: "Cloud metadata endpoint IP hardcoded or reachable — credential theft via SSRF."
+    remediation: "Block 169.254.169.254 and metadata endpoints at network level. Use IMDSv2 (require PUT token) on AWS."
+
+  - id: SSRF-007
+    name: "Go http.Get with user-controlled URL"
+    cwe: 918
+    severity: HIGH
+    languages: [go]
+    regex: '(?i)http\.(?:Get|Post|Head)\s*\(\s*(?:r\.(?:URL\.|Form\.|FormValue|PostForm)|req\.\w+|fmt\.Sprintf)'
+    context_require: []
+    context_reject: ["AllowedHosts", "validateURL", "denyPrivate"]
+    fp_conditions: []
+    description: "Go HTTP client with user-controlled URL — SSRF."
+    remediation: "Parse URL, validate hostname against allowlist, block private IP ranges before http.Get()."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 12 — OPEN REDIRECT
+# ───────────────────────────────────────────────────────────────
+
+  - id: REDIR-001
+    name: "Express res.redirect with user URL"
+    cwe: 601
+    severity: MEDIUM
+    languages: [javascript]
+    regex: '(?i)res\.redirect\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)\w*(?:url|Url|URL|redirect|next|return|to|dest|href)'
+    context_require: []
+    context_reject: ["allowedDomains", "whitelist", "startsWith.*\/"]
+    fp_conditions: ["Redirect URL validated to start with / (relative URL only)"]
+    description: "Express redirect with user-controlled URL — phishing / session hijacking via redirect."
+    remediation: "Only allow relative URLs starting with /. Reject absolute URLs or validate against origin allowlist."
+
+  - id: REDIR-002
+    name: "Python Flask redirect with user URL"
+    cwe: 601
+    severity: MEDIUM
+    languages: [python]
+    regex: '(?i)(?:redirect|make_response.*location)\s*\(\s*(?:request\.|url_for\(request\.)'
+    context_require: []
+    context_reject: ["urlparse", "url_has_allowed_host_and_scheme", "is_safe_url"]
+    fp_conditions: []
+    description: "Flask redirect with user-controlled destination URL — open redirect."
+    remediation: "Use is_safe_url() check: from urllib.parse import urlparse, urljoin — validate host matches app host."
+
+  - id: REDIR-003
+    name: "PHP header Location with user input"
+    cwe: 601
+    severity: MEDIUM
+    languages: [php]
+    regex: '(?i)header\s*\(\s*["\']Location:\s*["\']?\s*\.\s*\$(?:_GET|_POST|_REQUEST|\w+)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP Location header with concatenated user input — open redirect."
+    remediation: "Never use user input in Location header directly. Use a mapping of allowed redirect keys."
+
+  - id: REDIR-004
+    name: "Java HttpServletResponse sendRedirect with parameter"
+    cwe: 601
+    severity: MEDIUM
+    languages: [java]
+    regex: '(?i)response\.sendRedirect\s*\(\s*request\.getParameter'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Java sendRedirect() with unvalidated user parameter — open redirect."
+    remediation: "Validate URL is relative or matches allowed host list before calling sendRedirect()."
+
+  - id: REDIR-005
+    name: "Go http.Redirect with user URL"
+    cwe: 601
+    severity: MEDIUM
+    languages: [go]
+    regex: '(?i)http\.Redirect\s*\([^,]+,[^,]+,\s*(?:r\.(?:URL\.|Form\.|FormValue)|req\.)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Go http.Redirect with user-controlled URL path or parameter."
+    remediation: "Validate redirect URL starts with / for relative, or parse and verify host matches expected domain."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 13 — INSECURE DESERIALIZATION
+# ───────────────────────────────────────────────────────────────
+
+  - id: DESER-001
+    name: "Python pickle.loads with user data"
+    cwe: 502
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)pickle\.(?:loads|load)\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Pickled data is from a trusted internal source only and never crosses a trust boundary"]
+    description: "Python pickle deserialization — arbitrary code execution if user-controlled data passed."
+    remediation: "Never deserialize pickle from untrusted sources. Use JSON/msgpack for data exchange."
+
+  - id: DESER-002
+    name: "Python yaml.load without SafeLoader"
+    cwe: 502
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)yaml\.load\s*\([^)]*(?!Loader\s*=\s*(?:yaml\.SafeLoader|SafeLoader))'
+    context_require: []
+    context_reject: ["SafeLoader", "yaml.safe_load"]
+    fp_conditions: []
+    description: "yaml.load() without SafeLoader executes arbitrary Python via !!python/object tags."
+    remediation: "Use yaml.safe_load() for all YAML parsing. Never use yaml.load() with user input."
+
+  - id: DESER-003
+    name: "Java ObjectInputStream.readObject()"
+    cwe: 502
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)new\s+ObjectInputStream.*readObject\s*\(\s*\)'
+    context_require: []
+    context_reject: ["WhitelistObjectInputStream", "ValidatingObjectInputStream", "lookAhead"]
+    fp_conditions: ["Using Apache Commons IO ValidatingObjectInputStream with explicit class whitelist"]
+    description: "Java native deserialization — arbitrary code execution via gadget chains in classpath."
+    remediation: "Use ValidatingObjectInputStream with explicit class allowlist. Prefer JSON/protobuf over Java serialization."
+
+  - id: DESER-004
+    name: "PHP unserialize with user data"
+    cwe: 502
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)unserialize\s*\(\s*\$(?:_GET|_POST|_REQUEST|_COOKIE|\w+)'
+    context_require: []
+    context_reject: ["allowed_classes.*=>.*false"]
+    fp_conditions: ["Using allowed_classes => false option in PHP 7+"]
+    description: "PHP unserialize() with user input — PHP object injection to RCE via magic method chains."
+    remediation: "Use JSON instead. If serialization needed: unserialize($data, ['allowed_classes' => false])"
+
+  - id: DESER-005
+    name: "Ruby Marshal.load with user data"
+    cwe: 502
+    severity: CRITICAL
+    languages: [ruby]
+    regex: '(?i)Marshal\.(?:load|restore)\s*\('
+    context_require: ["params", "request", "user", "input", "data", "body", "cookie", "session"]
+    context_reject: []
+    fp_conditions: []
+    description: "Ruby Marshal.load() with user-controlled data — arbitrary Ruby code execution."
+    remediation: "Never use Marshal for user-supplied data. Use JSON.parse() for untrusted input."
+
+  - id: DESER-006
+    name: "Node.js node-serialize unserialize"
+    cwe: 502
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)(?:require\s*\(\s*["\']node-serialize["\']\s*\)|serialize)\.unserialize\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "node-serialize.unserialize() — IIFE in serialized JSON leads to arbitrary code execution."
+    remediation: "Remove node-serialize entirely. Use JSON.parse() for all data deserialization."
+
+  - id: DESER-007
+    name: "Java XStream fromXML with user input"
+    cwe: 502
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)xstream\.fromXML\s*\('
+    context_require: []
+    context_reject: ["addPermission", "XStreamSecurity", "allowTypesByRegExp"]
+    fp_conditions: ["XStream configured with class allowlist via Security framework"]
+    description: "XStream XML deserialization without security framework — RCE via type manipulation."
+    remediation: "Apply XStream security framework with explicit type allowlist or upgrade to version >= 1.4.19."
+
+  - id: DESER-008
+    name: "Java Jackson enableDefaultTyping"
+    cwe: 502
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)objectMapper\.enableDefaultTyping\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Jackson enableDefaultTyping() allows polymorphic deserialization — RCE via gadget chains."
+    remediation: "Remove enableDefaultTyping(). Use @JsonTypeInfo with explicit subtypes and a type allowlist."
+
+  - id: DESER-009
+    name: "PHP phar:// wrapper deserialization"
+    cwe: 502
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)phar://'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Used in legitimate PHAR archive operations with no user-controlled path component"]
+    description: "PHP phar:// wrapper in file operation — triggers deserialization of PHAR metadata."
+    remediation: "Block phar:// in user-controlled paths. Disable Phar::loadPhar() if not needed. Patch CVE-2018-19296."
+
+  - id: DESER-010
+    name: "Go gob decode with user data"
+    cwe: 502
+    severity: MEDIUM
+    languages: [go]
+    regex: '(?i)gob\.NewDecoder\s*\([^)]*(?:req\.|r\.Body|request\.Body|user|input)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Go gob decoding of user-controlled data — type confusion and potential panics."
+    remediation: "Validate gob source. Prefer JSON or protobuf for external data exchange."
+

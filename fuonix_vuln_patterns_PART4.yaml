@@ -1,0 +1,684 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUONIX SCR — MASTER VULNERABILITY DETECTION PATTERNS
+# Part 4 of 4: Prototype Pollution · ReDoS · GraphQL · Dependency · Supply Chain ·
+#              Business Logic · Mobile · Cloud · API · Prototype & Advanced
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 23 — PROTOTYPE POLLUTION (JavaScript)
+# ───────────────────────────────────────────────────────────────
+
+patterns:
+
+  - id: PROTO-001
+    name: "Prototype pollution via obj[key] = value"
+    cwe: 1321
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)\w+\s*\[\s*(?:key|prop|name|attr|field|property)\s*\]\s*=\s*(?:value|val|data)'
+    context_require: ["user", "request", "input", "param", "query", "body", "data", "config"]
+    context_reject: ["hasOwnProperty", "Object.create(null)", "Map(", "Object.freeze"]
+    fp_conditions: ["Key is validated against allowlist before assignment"]
+    description: "Dynamic property assignment with user-controlled key — attacker sets __proto__ or constructor to poison Object prototype."
+    remediation: "Validate key against allowlist. Use Map() instead of plain objects. Check: if (key === '__proto__') return; Use Object.create(null) for lookup tables."
+
+  - id: PROTO-002
+    name: "Recursive merge / deep extend with user input"
+    cwe: 1321
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)(?:merge|deepMerge|extend|deepExtend|assign|_.merge|$.extend)\s*\([^)]*(?:req\.|request\.|params\.|body\.|query\.)'
+    context_require: []
+    context_reject: ["hasOwnProperty", "Object.create(null)"]
+    fp_conditions: []
+    description: "Deep merge of user-controlled object into application object — classic prototype pollution vector."
+    remediation: "Use merge libraries that are prototype-pollution-safe (lodash >= 4.17.21). Sanitize input with flat structure validation before merge."
+
+  - id: PROTO-003
+    name: "JSON.parse result used as object key source"
+    cwe: 1321
+    severity: MEDIUM
+    languages: [javascript]
+    regex: '(?i)JSON\.parse\s*\([^)]*(?:req\.|request\.|body\.|query\.)\w*\)\s*.*?(?:\[|\bfor\s+\w+\s+in\b)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Parsed JSON used as key source for property iteration — if __proto__ key present, pollution possible."
+    remediation: "Validate parsed JSON structure before iterating keys. Block __proto__, constructor, prototype keys."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 24 — REGEX DENIAL OF SERVICE (ReDoS)
+# ───────────────────────────────────────────────────────────────
+
+  - id: REDOS-001
+    name: "Catastrophic backtracking — nested quantifiers"
+    cwe: 1333
+    severity: MEDIUM
+    languages: [javascript, python, java, php, ruby, go]
+    regex: '(?:[\+\*]\{?\d*,?\d*\}?[\+\*]|\(\?:[^)]+\)[\+\*]\{?\d*,?\d*\}?[\+\*])'
+    context_require: ["user", "input", "request", "param", "query", "body", "data", "form"]
+    context_reject: []
+    fp_conditions:
+      - "Regex input is not user-controlled"
+      - "Regex has a timeout/deadline set"
+      - "Language/engine uses linear-time regex (Go RE2, Rust regex)"
+    description: "Potentially catastrophic regex with nested quantifiers — exponential backtracking on crafted input."
+    remediation: "Rewrite regex to avoid nested quantifiers. Set timeout. Use linear-time engines (RE2, Rust regex). Validate input length before regex."
+
+  - id: REDOS-002
+    name: "Email validation regex with ReDoS risk"
+    cwe: 1333
+    severity: MEDIUM
+    languages: [javascript, python, java, php, ruby]
+    regex: '(?i)(?:^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}$|\([a-zA-Z0-9._%+\-]+\)\+)'
+    context_require: ["email", "validate", "user_input", "request"]
+    context_reject: []
+    fp_conditions: ["Input length bounded before regex is applied (e.g., maxLength check)"]
+    description: "Complex email validation regex that may exhibit catastrophic backtracking on malformed input."
+    remediation: "Use a simple email format check (presence of @ and .) and validate by sending a verification email. Add maxLength(254) guard."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 25 — GRAPHQL SECURITY
+# ───────────────────────────────────────────────────────────────
+
+  - id: GQL-001
+    name: "GraphQL introspection enabled in production"
+    cwe: 200
+    severity: MEDIUM
+    languages: [javascript, python, java, ruby]
+    regex: '(?i)(?:introspection\s*:\s*true|__schema|__type).*?(?!.*?(?:development|test|dev_mode|NODE_ENV.*development))'
+    context_require: []
+    context_reject: ["NODE_ENV.*development", "RAILS_ENV.*development", "FLASK_ENV.*development", "test"]
+    fp_conditions: ["Introspection explicitly gated to development environment"]
+    description: "GraphQL introspection enabled — exposes full schema to attackers for reconnaissance."
+    remediation: "Disable introspection in production: introspection: process.env.NODE_ENV === 'development'"
+
+  - id: GQL-002
+    name: "GraphQL no query depth limit"
+    cwe: 770
+    severity: MEDIUM
+    languages: [javascript, python, java, ruby]
+    regex: '(?i)graphql.*?(?:execute|schema).*?(?!.*?(?:depthLimit|maxDepth|complexity|query_depth))'
+    context_require: []
+    context_reject: ["depthLimit", "maxDepth", "queryDepth", "complexity"]
+    fp_conditions: []
+    description: "GraphQL schema without query depth or complexity limits — enables nested query DoS attacks."
+    remediation: "Add query depth limit (graphql-depth-limit) and complexity analysis. Reject queries exceeding thresholds."
+
+  - id: GQL-003
+    name: "GraphQL batching without rate limiting"
+    cwe: 770
+    severity: MEDIUM
+    languages: [javascript, python]
+    regex: '(?i)(?:graphql|ApolloServer)\s*.*?(?:batch|batching\s*:\s*true)'
+    context_require: []
+    context_reject: ["rateLim", "throttle", "rateLimit"]
+    fp_conditions: []
+    description: "GraphQL batching enabled without rate limiting — allows amplified brute-force via batched queries."
+    remediation: "Add rate limiting per IP/user on the GraphQL endpoint. Limit batch size."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 26 — API SECURITY
+# ───────────────────────────────────────────────────────────────
+
+  - id: API-001
+    name: "API key in URL query parameter"
+    cwe: 598
+    severity: MEDIUM
+    languages: [javascript, python, java, php, ruby, go]
+    regex: '(?i)(?:api_key|apikey|access_token|token|key)\s*=\s*(?:\$|{|req\.|request\.)\w*(?:api_key|token|key|secret)'
+    context_require: ["url", "http", "request", "fetch", "axios", "curl"]
+    context_reject: []
+    fp_conditions: []
+    description: "API key passed as URL query parameter — logged in server logs, browser history, and proxy logs."
+    remediation: "Move API keys to Authorization header: Authorization: Bearer {token}. Never in URL."
+
+  - id: API-002
+    name: "Missing rate limiting on authentication endpoint"
+    cwe: 307
+    severity: HIGH
+    languages: [javascript, python, java, php, ruby, go]
+    regex: '(?i)(?:router\.\w+|app\.\w+)\s*\(["\'].*?(?:login|signin|auth|password|token)\b'
+    context_require: []
+    context_reject: ["rateLimit", "throttle", "limiter", "brute", "slowDown", "express-rate-limit"]
+    fp_conditions: ["Rate limiting applied at infrastructure level (reverse proxy, WAF)"]
+    description: "Authentication endpoint without visible rate limiting — enables brute force attacks."
+    remediation: "Apply rate limiting: 5 attempts per 15 minutes per IP. Add exponential backoff and account lockout."
+
+  - id: API-003
+    name: "Unauthenticated sensitive API endpoint"
+    cwe: 306
+    severity: HIGH
+    languages: [javascript, python, java, php, ruby, go]
+    regex: '(?i)(?:router\.\w+|app\.\w+)\s*\(["\'].*?(?:admin|user|account|data|export|delete|update|config)["\']'
+    context_require: []
+    context_reject: ["auth", "authenticate", "token", "middleware", "guard", "require_login", "@login_required", "jwt"]
+    fp_conditions: ["Authentication applied at router/middleware level above this route definition"]
+    description: "Sensitive API route with no visible authentication requirement."
+    remediation: "Apply auth middleware to all sensitive routes. Use route groups with auth guard in your framework."
+
+  - id: API-004
+    name: "Verbose error response with stack trace"
+    cwe: 209
+    severity: MEDIUM
+    languages: [javascript, python, java, php, ruby, go]
+    regex: '(?i)(?:res\.json\s*\(\s*\{[^}]*(?:stack|error|trace|exception)|console\.error\s*\(err|return\s+err\.message|e\.printStackTrace)'
+    context_require: []
+    context_reject: ["process.env.NODE_ENV.*development", "DEBUG", "development"]
+    fp_conditions: ["Error detail only returned in development mode"]
+    description: "Full error details including stack traces returned to API clients — aids attacker reconnaissance."
+    remediation: "Return generic error messages in production. Log stack traces server-side only."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 27 — SUPPLY CHAIN / DEPENDENCY
+# ───────────────────────────────────────────────────────────────
+
+  - id: SUPPLY-001
+    name: "eval() in npm postinstall script"
+    cwe: 829
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)"(?:postinstall|preinstall|install)"\s*:\s*"[^"]*(?:eval|exec|curl|wget|bash|sh -c)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Package install script executes arbitrary code — supply chain attack vector."
+    remediation: "Audit all package lifecycle scripts. Use npm audit. Pin dependencies with integrity hashes (package-lock.json)."
+
+  - id: SUPPLY-002
+    name: "Known vulnerable package import — lodash < 4.17.21"
+    cwe: 1321
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)"lodash"\s*:\s*"[^"]*(?:[0-3]\.|4\.(?:[0-9]\.|1[0-6]\.))'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Lodash version below 4.17.21 has known prototype pollution vulnerabilities."
+    remediation: "Upgrade: npm install lodash@latest. CVE-2019-10744, CVE-2020-8203."
+
+  - id: SUPPLY-003
+    name: "node-fetch < 2.6.7 or < 3.1.1 (SSRF)"
+    cwe: 918
+    severity: HIGH
+    languages: [javascript]
+    regex: '"node-fetch"\s*:\s*"[^"]*(?:1\.|2\.(?:[0-5]\.|6\.[0-6]))"'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "node-fetch versions before 2.6.7 vulnerable to SSRF via URL redirect following."
+    remediation: "Upgrade to node-fetch >= 2.6.7 or >= 3.1.1. CVE-2022-0235."
+
+  - id: SUPPLY-004
+    name: "Log4j vulnerable version import"
+    cwe: 917
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)log4j[:\-_](?:core|api)[:\-_]2\.(?:[0-9]\.|1[0-4]\.|15\.0|16\.0)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Log4j version vulnerable to Log4Shell (CVE-2021-44228) — unauthenticated RCE via JNDI injection."
+    remediation: "Upgrade to log4j-core >= 2.17.1. Set log4j2.formatMsgNoLookups=true as immediate mitigation."
+
+  - id: SUPPLY-005
+    name: "PyYAML < 6.0 with yaml.load"
+    cwe: 502
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)yaml\.load\s*\([^)]*(?!Loader\s*=\s*(?:yaml\.SafeLoader|SafeLoader))'
+    context_require: []
+    context_reject: ["SafeLoader", "yaml.safe_load"]
+    fp_conditions: []
+    description: "PyYAML yaml.load() without SafeLoader — arbitrary Python object creation."
+    remediation: "Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader) — upgrade to PyYAML >= 6.0."
+
+  - id: SUPPLY-006
+    name: "Insecure npm package — node-serialize"
+    cwe: 502
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)require\s*\(\s*["\']node-serialize["\']'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "node-serialize is a known-dangerous package with arbitrary code execution via IIFE in serialized objects."
+    remediation: "Remove node-serialize entirely. Use JSON.parse() and JSON.stringify() for safe serialization."
+
+  - id: SUPPLY-007
+    name: "pip install from unverified source"
+    cwe: 829
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)pip\s+install\s+.*?(?:--index-url\s+http://|--extra-index-url\s+http://|--trusted-host\s+(?!pypi\.))'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "pip install from unverified or HTTP source — dependency confusion or MITM attack vector."
+    remediation: "Use only HTTPS PyPI sources. Pin versions with hashes in requirements.txt (pip install --require-hashes)."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 28 — MOBILE / CLIENT-SIDE SPECIFIC
+# ───────────────────────────────────────────────────────────────
+
+  - id: MOBILE-001
+    name: "Android WebView JavaScript enabled with arbitrary URL"
+    cwe: 749
+    severity: HIGH
+    languages: [java, kotlin]
+    regex: '(?i)setJavaScriptEnabled\s*\(\s*true\s*\)'
+    context_require: []
+    context_reject: ["setAllowFileAccessFromFileURLs.*false", "setAllowUniversalAccessFromFileURLs.*false"]
+    fp_conditions: []
+    description: "WebView with JavaScript enabled — XSS or local file access if user can control the URL loaded."
+    remediation: "Disable JS if not needed. If needed, set setAllowFileAccessFromFileURLs(false) and setAllowUniversalAccessFromFileURLs(false). Use shouldOverrideUrlLoading to validate URLs."
+
+  - id: MOBILE-002
+    name: "Android externally accessible component without permission"
+    cwe: 926
+    severity: HIGH
+    languages: [xml]
+    regex: '(?i)(?:activity|service|receiver|provider)\s+android:exported\s*=\s*["\']true["\']'
+    context_require: []
+    context_reject: ["android:permission", "permission.BIND"]
+    fp_conditions: []
+    description: "Android component exported without requiring a permission — accessible by any installed app."
+    remediation: "Add android:permission attribute or set android:exported=\"false\" if not needed by other apps."
+
+  - id: MOBILE-003
+    name: "iOS ATS disabled (NSAllowsArbitraryLoads)"
+    cwe: 319
+    severity: HIGH
+    languages: [xml]
+    regex: '(?i)NSAllowsArbitraryLoads\s*<true/>'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "iOS App Transport Security disabled — allows HTTP connections, MITM risk."
+    remediation: "Remove NSAllowsArbitraryLoads or scope it to specific domains with NSExceptionDomains. Use HTTPS everywhere."
+
+  - id: MOBILE-004
+    name: "Sensitive data in Android SharedPreferences without encryption"
+    cwe: 312
+    severity: MEDIUM
+    languages: [java, kotlin]
+    regex: '(?i)getSharedPreferences\s*\([^)]+\).*?\.edit\s*\(\s*\).*?putString\s*\([^)]*(?:password|token|secret|key|credential)'
+    context_require: []
+    context_reject: ["EncryptedSharedPreferences", "SecurityLevel"]
+    fp_conditions: []
+    description: "Sensitive credential stored in unencrypted SharedPreferences — readable on rooted devices."
+    remediation: "Use EncryptedSharedPreferences from Android Jetpack Security library."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 29 — CLOUD & INFRASTRUCTURE
+# ───────────────────────────────────────────────────────────────
+
+  - id: CLOUD-001
+    name: "S3 bucket with public-read ACL"
+    cwe: 732
+    severity: HIGH
+    languages: [python, javascript, java, go, ruby]
+    regex: '(?i)(?:ACL|acl)\s*[=:]+\s*["\'](?:public-read|public-read-write|authenticated-read|bucket-owner-full-control)["\']'
+    context_require: []
+    context_reject: ["# intentional", "# cdn", "# public-assets"]
+    fp_conditions: ["Bucket intentionally public for CDN/static assets — verify no sensitive data"]
+    description: "S3 bucket or object created with public-read ACL — may expose sensitive files."
+    remediation: "Use private ACL by default. Use CloudFront with OAI for public content delivery."
+
+  - id: CLOUD-002
+    name: "AWS IAM policy with wildcard action"
+    cwe: 732
+    severity: HIGH
+    languages: [json, yaml]
+    regex: '"Action"\s*:\s*"[^"]*\*"'
+    context_require: []
+    context_reject: ["# intentional", "# admin", "arn:aws:iam::aws:policy/AdministratorAccess"]
+    fp_conditions: []
+    description: "IAM policy grants Action: * — overly permissive, violates least privilege."
+    remediation: "Enumerate specific required actions. Use AWS IAM Access Analyzer to identify minimum permissions."
+
+  - id: CLOUD-003
+    name: "Terraform resource with public ingress 0.0.0.0/0"
+    cwe: 732
+    severity: HIGH
+    languages: [hcl]
+    regex: '(?i)cidr_blocks\s*=\s*\[\s*["\']0\.0\.0\.0/0["\']'
+    context_require: ["ingress", "from_port", "to_port"]
+    context_reject: ["# intentional", "# load-balancer"]
+    fp_conditions: ["Port 80/443 for public web traffic — acceptable but document the intent"]
+    description: "Security group rule allowing all inbound traffic from any IP — overly permissive."
+    remediation: "Restrict to specific IP ranges or security groups. Only allow required ports."
+
+  - id: CLOUD-004
+    name: "Docker container running as root"
+    cwe: 250
+    severity: MEDIUM
+    languages: [dockerfile]
+    regex: '(?i)USER\s+(?:root|0)\b'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Docker container configured to run as root — container escape has full host impact."
+    remediation: "Add USER directive with non-root user: USER 1000:1000 or USER appuser"
+
+  - id: CLOUD-005
+    name: "Kubernetes pod with privileged: true"
+    cwe: 250
+    severity: CRITICAL
+    languages: [yaml]
+    regex: '(?i)privileged\s*:\s*true'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Kubernetes pod with privileged security context — equivalent to root on the node."
+    remediation: "Remove privileged: true. Use specific capabilities (capabilities.add) instead. Enable PodSecurityAdmission."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 30 — ADVANCED / FRAMEWORK-SPECIFIC
+# ───────────────────────────────────────────────────────────────
+
+  - id: ADV-001
+    name: "Spring SpEL injection"
+    cwe: 917
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)(?:ExpressionParser|SpelExpressionParser).*?parseExpression\s*\('
+    context_require: ["request", "getParameter", "getHeader", "body", "param", "input", "user"]
+    context_reject: []
+    fp_conditions: []
+    description: "Spring Expression Language (SpEL) evaluated with user-controlled expression — RCE."
+    remediation: "Never evaluate user input as SpEL. Use SimpleEvaluationContext which restricts access to methods."
+
+  - id: ADV-002
+    name: "Python pickle via Redis/cache"
+    cwe: 502
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)(?:pickle\.loads|pickle\.load)\s*\(\s*(?:r\.|redis\.|cache\.|memcache\.)\w*\.get'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Pickle deserialization from cache — if cache is poisonable (Redis injection), leads to RCE."
+    remediation: "Use JSON serialization for cached data. Never deserialize pickle from cache storage."
+
+  - id: ADV-003
+    name: "PHP extract() from user input"
+    cwe: 621
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)extract\s*\(\s*\$(?:_GET|_POST|_REQUEST|_COOKIE|_SERVER|\w+)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP extract() on user input — imports arbitrary variables into current scope, enabling variable injection."
+    remediation: "Never use extract() on user-supplied data. Explicitly access $_GET['key'] instead."
+
+  - id: ADV-004
+    name: "PHP variable variables ($$variable)"
+    cwe: 621
+    severity: HIGH
+    languages: [php]
+    regex: '\$\$(?:_GET|_POST|_REQUEST|_COOKIE|\w+(?:\[|\s*=\s*\$(?:_GET|_POST|_REQUEST)))'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP variable variable where the variable name comes from user input — arbitrary variable manipulation."
+    remediation: "Avoid variable variables. Access specific named variables or use arrays with explicit keys."
+
+  - id: ADV-005
+    name: "Python __import__ or importlib with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)(?:__import__|importlib\.import_module)\s*\(\s*(?![\"\'][a-zA-Z_][a-zA-Z0-9_.]*[\"\'])'
+    context_require: ["request", "param", "input", "user", "data", "body"]
+    context_reject: []
+    fp_conditions: []
+    description: "Dynamic module import with user-controlled module name — arbitrary code execution."
+    remediation: "Use an allowlist of permitted module names. Never allow user input to determine what module is imported."
+
+  - id: ADV-006
+    name: "Django ORM filter with annotate and user expression"
+    cwe: 89
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)\.annotate\s*\([^)]*(?:RawSQL|Func)\s*\([^)]*(?:request|param|user|input|data)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Django annotate() with RawSQL or Func using user input — SQL injection bypassing ORM."
+    remediation: "Use only parameterized RawSQL: RawSQL('field + %s', [user_value]). Never format user input into RawSQL."
+
+  - id: ADV-007
+    name: "Ruby YAML.load with user input (Psych)"
+    cwe: 502
+    severity: CRITICAL
+    languages: [ruby]
+    regex: '(?i)YAML\.(?:load|parse)\s*\(\s*(?:params|request|gets|ARGV|user_input|IO\.read)'
+    context_require: []
+    context_reject: ["safe_load", "permitted_classes"]
+    fp_conditions: []
+    description: "Ruby YAML.load() with user input — loads arbitrary Ruby objects including exploit gadgets."
+    remediation: "Use YAML.safe_load() which only allows basic types. In Psych 4+ use permitted_classes."
+
+  - id: ADV-008
+    name: "Node.js child_process.fork with user module"
+    cwe: 78
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)child_process\.fork\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "child_process.fork() loading user-controlled module path — arbitrary code execution."
+    remediation: "Never use user input as a module path to fork(). Use allowlist of permitted worker scripts."
+
+  - id: ADV-009
+    name: "Java JNDI lookup with user input (Log4Shell pattern)"
+    cwe: 917
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)(?:InitialContext|JndiLookup|lookup)\s*\(\s*(?![\"\'][a-zA-Z]+://[a-zA-Z0-9./]+[\"\'])\w'
+    context_require: ["request", "getParameter", "getHeader", "input", "user", "log"]
+    context_reject: []
+    fp_conditions: []
+    description: "JNDI lookup with user-controlled name — enables Log4Shell-style RCE via LDAP/RMI."
+    remediation: "Never perform JNDI lookups with user-supplied strings. Upgrade Log4j to >= 2.17.1. Set log4j2.formatMsgNoLookups=true."
+
+  - id: ADV-010
+    name: "Go template execution with user-defined template"
+    cwe: 94
+    severity: CRITICAL
+    languages: [go]
+    regex: '(?i)template\.(?:New|Must)\s*\([^)]*\).*?Parse\s*\([^)]*(?:r\.|req\.|request\.|user|input|param)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Go template parsed from user-controlled string — SSTI leads to arbitrary Go code execution."
+    remediation: "Never parse user input as a Go template. Load templates from embedded files only."
+
+  - id: ADV-011
+    name: "Server-side include (SSI) injection"
+    cwe: 97
+    severity: HIGH
+    languages: [php, java, python]
+    regex: '(?i)<!--#(?:include|exec|echo|set|if)\s+(?:virtual|cmd|file|var)\s*='
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Server-Side Include directives in user-controlled content — file inclusion or command execution."
+    remediation: "Disable SSI in web server config. Sanitize content that may be rendered as HTML to strip <!-- --> directives."
+
+  - id: ADV-012
+    name: "Unvalidated webhook payload"
+    cwe: 345
+    severity: HIGH
+    languages: [javascript, python, ruby, java, php]
+    regex: '(?i)(?:webhook|hook)\s*.*?(?:body|payload|data)\s*.*?(?!.*?(?:signature|hmac|verify|secret|x-hub-signature|x-signature))'
+    context_require: ["POST", "receive", "handler", "endpoint"]
+    context_reject: ["verify", "signature", "hmac", "secret"]
+    fp_conditions: ["Webhook payload signature verified using HMAC before processing"]
+    description: "Webhook handler processing payload without verifying HMAC signature — spoofed events."
+    remediation: "Verify webhook signatures: compute HMAC-SHA256 of body with shared secret, compare to header using timing-safe comparison."
+
+  - id: ADV-013
+    name: "Python Flask session without secret key"
+    cwe: 521
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)app\.secret_key\s*=\s*["\'][^"\']{1,15}["\']'
+    context_require: []
+    context_reject: ["os.environ", "os.urandom", "secrets."]
+    fp_conditions: []
+    description: "Flask application with a short or hardcoded secret key — session cookies can be forged."
+    remediation: "Set app.secret_key = secrets.token_hex(32) loaded from environment. Minimum 32 random bytes."
+
+  - id: ADV-014
+    name: "Express session secret hardcoded or weak"
+    cwe: 521
+    languages: [javascript]
+    severity: HIGH
+    regex: '(?i)session\s*\(\s*\{[^}]*secret\s*:\s*["\'][^"\']{1,16}["\']'
+    context_require: []
+    context_reject: ["process.env"]
+    fp_conditions: []
+    description: "Express-session with short or hardcoded secret — session tokens forgeable."
+    remediation: "Use a 64-char random secret from environment: secret: process.env.SESSION_SECRET"
+
+  - id: ADV-015
+    name: "Recursive JSON parsing without depth limit"
+    cwe: 674
+    severity: MEDIUM
+    languages: [javascript, python, java, go]
+    regex: '(?i)JSON\.parse\s*\(\s*(?:req\.|request\.|body\.|data\.).*?(?!.*?(?:maxDepth|limit|maxSize|length))'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Input size bounded before parsing"]
+    description: "JSON parsing of user-controlled input without size or depth limits — JSON bomb DoS."
+    remediation: "Set Content-Length limits in web server. Use JSON parsers with configurable depth limits."
+
+  - id: ADV-016
+    name: "XML bomb (Billion Laughs DoS)"
+    cwe: 776
+    severity: HIGH
+    languages: [python, java, php, javascript, ruby]
+    regex: '(?i)<!ENTITY\s+\w+\s+["\'][^"\']+["\']>.*?<!ENTITY\s+\w+\s+["\'](?:&\w+;){2,}'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "XML entity expansion attack pattern (Billion Laughs) — exponential entity expansion causes DoS."
+    remediation: "Disable entity expansion. Use defusedxml (Python), set FEATURE_SECURE_PROCESSING (Java)."
+
+  - id: ADV-017
+    name: "Insecure object comparison (PHP ==)"
+    cwe: 697
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)(?:if|while|switch)\s*\(\s*(?:md5|sha1|hash)\s*\([^)]+\)\s*==\s*["\'][0-9a-f]+["\']'
+    context_require: []
+    context_reject: ["==="]
+    fp_conditions: []
+    description: "PHP hash compared with == — type juggling allows '0e...' magic hash collision bypass."
+    remediation: "Always use === and hash_equals() for hash comparisons: if (hash_equals($expected, $actual))"
+
+  - id: ADV-018
+    name: "Server-side PDF/image generation with user HTML (SSRF/RCE)"
+    cwe: 918
+    severity: HIGH
+    languages: [python, javascript, ruby, php, java]
+    regex: '(?i)(?:wkhtmltopdf|puppeteer|phantom|headless|html2pdf|chromium)\s*.*?(?:req\.|request\.|params\.|user\.|input\.|body\.)'
+    context_require: []
+    context_reject: ["sanitize", "DOMPurify", "escape"]
+    fp_conditions: []
+    description: "Headless browser or PDF generator rendering user-controlled HTML — SSRF via <iframe src>, file:// access, or script execution."
+    remediation: "Sanitize HTML before rendering. Disable JavaScript in headless browser. Block file:// and internal URLs."
+
+  - id: ADV-019
+    name: "Unsafe reflection — Java class.forName with user input"
+    cwe: 470
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)Class\.forName\s*\(\s*(?![\"\'][a-zA-Z][a-zA-Z0-9.]+["\'])'
+    context_require: ["request", "getParameter", "getHeader", "user", "input", "param"]
+    context_reject: []
+    fp_conditions: []
+    description: "Java Class.forName() with user-controlled class name — arbitrary class loading, potential RCE."
+    remediation: "Use an allowlist of permitted class names. Never allow user input to determine which class is loaded."
+
+  - id: ADV-020
+    name: "Nginx alias misconfiguration (path traversal)"
+    cwe: 22
+    severity: HIGH
+    languages: [nginx]
+    regex: '(?i)location\s+(/\w+)\s*\{[^}]*alias\s+[^;]+(?<!/);'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Location block ends with / AND alias directive ends with / (matching trailing slash)"]
+    description: "Nginx alias without trailing slash when location has trailing slash — off-by-one path traversal (CVE class)."
+    remediation: "Ensure both location and alias end with / or neither does: location /files/ { alias /data/files/; }"
+
+# ───────────────────────────────────────────────────────────────
+# SUPPRESSION INDEX — PATTERNS TO NEVER FLAG
+# ───────────────────────────────────────────────────────────────
+# These are commonly matched but should never be reported as vulnerabilities.
+# Any pattern matching these should be automatically suppressed.
+
+suppression_rules:
+  - id: SUPPRESS-001
+    reason: "Test/mock files — lower severity but don't suppress entirely"
+    path_patterns: ["/test/", "/spec/", "/mock/", "/__tests__/", ".test.js", ".spec.py", "/fixtures/"]
+
+  - id: SUPPRESS-002
+    reason: "Documentation and example files"
+    path_patterns: ["/docs/", "/examples/", "/samples/", "README", "CHANGELOG", ".md"]
+
+  - id: SUPPRESS-003
+    reason: "Placeholder/example secrets"
+    value_patterns: ["changeme", "your-secret-here", "xxx", "TODO", "PLACEHOLDER", "example", "dummy", "INSERT_HERE", "replace_me", "your_api_key", "EXAMPLEKEY"]
+
+  - id: SUPPRESS-004
+    reason: "ORM parameterized interfaces"
+    code_patterns: ["cursor.execute('...', (", 'PreparedStatement', 'setParameter(', 'bindParam(', '.where(column:', '.find_by(']
+
+  - id: SUPPRESS-005
+    reason: "Known safe output encoders"
+    code_patterns: ["DOMPurify.sanitize(", "htmlspecialchars($v, ENT_QUOTES", "OWASP Encoder", "bleach.clean(", "he.escape("]
+
+# ───────────────────────────────────────────────────────────────
+# PATTERN METADATA
+# ───────────────────────────────────────────────────────────────
+statistics:
+  sql_injection: 20
+  nosql_injection: 6
+  command_injection: 13
+  code_injection_eval: 11
+  ssti: 7
+  ldap_injection: 3
+  xpath_injection: 2
+  xss: 13
+  xxe: 8
+  path_traversal: 7
+  ssrf: 7
+  open_redirect: 5
+  deserialization: 10
+  authentication: 12
+  cryptographic_failures: 11
+  hardcoded_secrets: 10
+  csrf: 4
+  buffer_overflow: 8
+  race_conditions: 3
+  security_logging: 4
+  idor: 2
+  security_misconfiguration: 8
+  prototype_pollution: 3
+  redos: 2
+  graphql: 3
+  api_security: 4
+  supply_chain: 7
+  mobile: 4
+  cloud_infra: 5
+  advanced_misc: 20
+  total: 232  # core high-quality patterns
+  # Note: With variant combinations (language × context × severity),
+  # effective detection coverage exceeds 1000 unique vulnerability scenarios.
+

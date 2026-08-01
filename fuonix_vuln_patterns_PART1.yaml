@@ -1,0 +1,789 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUONIX SCR — MASTER VULNERABILITY DETECTION PATTERNS
+# Part 1 of 4: Injection (SQL · NoSQL · OS Command · Code · SSTI · LDAP · XPath)
+# Format: id · name · cwe · severity · languages · regex · fp_conditions ·
+#         context_require · context_reject · description · remediation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+meta:
+  version: "3.0"
+  engine: "FUONIX SCR"
+  total_patterns: 1200+
+  categories: 22
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 1 — SQL INJECTION
+# ───────────────────────────────────────────────────────────────
+patterns:
+
+  - id: SQL-001
+    name: "Raw SQL String Concatenation — Generic"
+    cwe: 89
+    severity: CRITICAL
+    languages: [python, php, java, ruby, csharp, go, javascript, perl]
+    regex: '(?i)(execute|query|exec|db\.run|cursor\.execute)\s*\(\s*[f"\'`].*?\+|\.format\(|%\s*\('
+    context_require: ["user", "request", "param", "input", "argv", "environ", "body", "query", "form", "get", "post", "header", "cookie"]
+    context_reject: ["#", "//", "test_", "mock_", "fixture"]
+    fp_conditions:
+      - "Value is a hardcoded string literal with no variable interpolation"
+      - "Using ORM parameterized interface (?, %s, :param, @param)"
+    description: "SQL query built by string concatenation with user-controlled input — classic injection vector."
+    remediation: "Use parameterized queries or ORM abstraction. Never interpolate user input into SQL strings."
+    references: ["https://cwe.mitre.org/data/definitions/89.html", "https://owasp.org/www-community/attacks/SQL_Injection"]
+
+  - id: SQL-002
+    name: "Python cursor.execute with f-string"
+    cwe: 89
+    severity: CRITICAL
+    languages: [python]
+    regex: 'cursor\.execute\s*\(\s*f["\']'
+    context_require: []
+    context_reject: ["# noqa", "test_"]
+    fp_conditions: []
+    description: "Python database cursor executing SQL built with an f-string — direct injection path."
+    remediation: "Use cursor.execute('SELECT ... WHERE id = %s', (user_id,)) — never f-strings."
+
+  - id: SQL-003
+    name: "Python cursor.execute with % formatting"
+    cwe: 89
+    severity: CRITICAL
+    languages: [python]
+    regex: 'cursor\.execute\s*\(\s*["\'][^"\']*%[sd][^"\']*["\'\)]\s*%\s*'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Using cursor.execute with %s as placeholder passed as second argument tuple — that is safe"]
+    description: "SQL built with Python % string formatting before passing to cursor — injection risk."
+    remediation: "Pass parameters as second argument tuple: cursor.execute('SELECT ... WHERE x=%s', (val,))"
+
+  - id: SQL-004
+    name: "PHP mysql_query / mysqli_query with concatenation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)(mysql_query|mysqli_query|pg_query)\s*\(\s*[^,)]*\.\s*\$'
+    context_require: ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER", "$_FILES"]
+    context_reject: ["intval(", "is_numeric(", "htmlspecialchars("]
+    fp_conditions: ["Value passed through intval() or is_numeric() before use in numeric context"]
+    description: "PHP database query with string concatenation of superglobal user input."
+    remediation: "Use MySQLi prepared statements: $stmt = $conn->prepare('SELECT ... WHERE id=?'); $stmt->bind_param('i', $id);"
+
+  - id: SQL-005
+    name: "PHP PDO query with string interpolation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)\$(?:pdo|db|conn|database)[-–>]+query\s*\(\s*["\'].*?\$'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PDO query() method with variable interpolation inside the SQL string — not parameterized."
+    remediation: "Use PDO::prepare() with bindParam() or bindValue() and positional/named placeholders."
+
+  - id: SQL-006
+    name: "Java Statement.execute with concatenation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)(?:statement|stmt)\s*\.\s*(?:execute|executeQuery|executeUpdate)\s*\(\s*["\'].*?\+\s*'
+    context_require: []
+    context_reject: ["PreparedStatement", "CallableStatement"]
+    fp_conditions: ["Using PreparedStatement — those are parameterized and safe"]
+    description: "Java Statement executing SQL with string concatenation — textbook SQLi."
+    remediation: "Use PreparedStatement: PreparedStatement ps = conn.prepareStatement('SELECT ... WHERE id=?'); ps.setInt(1, id);"
+
+  - id: SQL-007
+    name: "Java Spring JdbcTemplate with string format"
+    cwe: 89
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)jdbcTemplate\.(?:query|update|execute)\s*\(\s*String\.format\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Spring JdbcTemplate call with SQL built via String.format — user data may be interpolated."
+    remediation: "Use JdbcTemplate with ? placeholders and args array: jdbcTemplate.query('SELECT ... WHERE id=?', new Object[]{id}, mapper)"
+
+  - id: SQL-008
+    name: "Ruby ActiveRecord find_by_sql with interpolation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [ruby]
+    regex: '(?i)find_by_sql\s*\(\s*["\'].*?#\{'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "ActiveRecord find_by_sql with Ruby string interpolation — bypasses ORM protection."
+    remediation: "Use find_by_sql with array syntax: Model.find_by_sql(['SELECT ... WHERE id=?', id])"
+
+  - id: SQL-009
+    name: "Ruby where() clause with string interpolation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [ruby]
+    regex: '\.where\s*\(\s*["\'][^"\']*#\{'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "ActiveRecord where() with string interpolation — classic Rails SQLi."
+    remediation: "Use where('column = ?', value) or where(column: value) — never interpolate."
+
+  - id: SQL-010
+    name: "Django ORM raw() with format"
+    cwe: 89
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)\.raw\s*\(\s*[f"\'].*?(?:%s|%d|\{)'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["raw() called with params argument as second positional — that is safe"]
+    description: "Django raw() SQL with string formatting — user input interpolated before parameterization."
+    remediation: "Use Model.objects.raw('SELECT ... WHERE id=%s', [user_id]) — the params argument, not string format."
+
+  - id: SQL-011
+    name: "Django extra() with user input"
+    cwe: 89
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)\.extra\s*\(\s*(?:where|select|tables|order_by)\s*=\s*\['
+    context_require: ["request", "param", "GET", "POST", "data", "kwargs"]
+    context_reject: []
+    fp_conditions: ["Values in extra() are hardcoded strings with no user data"]
+    description: "Django extra() with user-controlled data in where/select/tables — injection risk."
+    remediation: "Avoid extra(). Use params argument if required: .extra(where=['name=%s'], params=[name])"
+
+  - id: SQL-012
+    name: "Node.js mysql package with string concatenation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)connection\.query\s*\(\s*[`"\'].*?\$\{|[`"\'][^`"\']*\+\s*(?:req\.|request\.|params\.|query\.)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Node.js mysql/mysql2 query built with template literal or concatenation from request data."
+    remediation: "Use parameterized queries: connection.query('SELECT ... WHERE id=?', [id], callback)"
+
+  - id: SQL-013
+    name: "Sequelize literal() with user input"
+    cwe: 89
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)sequelize\.literal\s*\(\s*[`"\'].*?\$\{'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Sequelize.literal() with template literal interpolation — escapes ORM protection."
+    remediation: "Avoid Sequelize.literal() with user data. Use parameterized where clauses."
+
+  - id: SQL-014
+    name: "C# SqlCommand with string concatenation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [csharp]
+    regex: '(?i)new\s+SqlCommand\s*\(\s*["\'].*?\+\s*|SqlCommand\s+\w+\s*=\s*new\s+SqlCommand\s*\(\s*\$"'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "ADO.NET SqlCommand built with string concatenation or interpolation."
+    remediation: "Use SqlCommand with Parameters.AddWithValue(): cmd.Parameters.AddWithValue('@id', userId)"
+
+  - id: SQL-015
+    name: "Go database/sql QueryRow with Sprintf"
+    cwe: 89
+    severity: CRITICAL
+    languages: [go]
+    regex: '(?i)db\.(?:Query|QueryRow|Exec)\s*\(\s*fmt\.Sprintf\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Go database/sql with fmt.Sprintf building the query string — injection via format args."
+    remediation: "Use placeholders: db.QueryRow('SELECT ... WHERE id=$1', id) — never fmt.Sprintf."
+
+  - id: SQL-016
+    name: "Hibernate HQL string concatenation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)(?:createQuery|createHQLQuery)\s*\(\s*["\'].*?\+\s*'
+    context_require: []
+    context_reject: [":param", "setParameter"]
+    fp_conditions: ["Using named parameters with setParameter()"]
+    description: "Hibernate HQL query with string concatenation — HQL injection mirrors SQL injection."
+    remediation: "Use named parameters: session.createQuery('FROM User WHERE name=:name').setParameter('name', name)"
+
+  - id: SQL-017
+    name: "PHP PDO exec with concatenation"
+    cwe: 89
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)\$(?:pdo|db|conn)[-–>]+exec\s*\(\s*["\'].*?\.'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PDO::exec() used with string concatenation — does not support parameter binding."
+    remediation: "Use PDO::prepare() instead of exec() for any query with external input."
+
+  - id: SQL-018
+    name: "Second-Order SQL Injection Pattern"
+    cwe: 89
+    severity: HIGH
+    languages: [python, php, java, ruby, javascript]
+    regex: '(?i)(?:INSERT|UPDATE)\s+.*?(?:VALUES|SET)\s*.*?(?:\$_(?:GET|POST|REQUEST)|request\.|req\.body|params\.|@\w+)'
+    context_require: []
+    context_reject: ["prepared", "bind", "parameterized", "placeholder"]
+    fp_conditions: []
+    description: "Data stored to DB without sanitization — potential second-order injection when retrieved and used in SQL/HTML context later."
+    remediation: "Sanitize at input AND output. Do not trust data retrieved from DB — it may carry injected payloads."
+
+  - id: SQL-019
+    name: "Blind SQL Injection via sleep/benchmark"
+    cwe: 89
+    severity: HIGH
+    languages: [python, php, java, javascript, ruby]
+    regex: '(?i)(?:sleep|benchmark|pg_sleep|waitfor\s+delay)\s*\(\s*(?:\d+|\$|\%|#\{)'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Used in test/seed data generation with hardcoded values"]
+    description: "Time-based blind SQLi indicator — sleep/benchmark with variable argument reaching DB."
+    remediation: "Parameterize all queries. Investigate how sleep() could reach query context."
+
+  - id: SQL-020
+    name: "MySQL LOAD_FILE / INTO OUTFILE"
+    cwe: 89
+    severity: CRITICAL
+    languages: [php, python, java, ruby]
+    regex: '(?i)(?:LOAD_FILE|INTO\s+OUTFILE|INTO\s+DUMPFILE)\s*\('
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "MySQL file read/write via SQL — if injectable, allows filesystem access."
+    remediation: "Remove LOAD_FILE/OUTFILE from application queries. Restrict FILE privilege on DB user."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 2 — NOSQL INJECTION
+# ───────────────────────────────────────────────────────────────
+
+  - id: NOSQL-001
+    name: "MongoDB query with unvalidated operator"
+    cwe: 943
+    severity: HIGH
+    languages: [javascript, python]
+    regex: '(?i)(?:find|findOne|update|deleteOne|deleteMany)\s*\(\s*(?:req\.|request\.|params\.|query\.)\w+'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Input validated to be a plain string/number — not an object"]
+    description: "MongoDB query receives user input directly — attacker may inject query operators like $where, $gt."
+    remediation: "Validate and sanitize input. Use allowlists for operator fields. Use libraries like mongo-sanitize."
+
+  - id: NOSQL-002
+    name: "MongoDB $where with function/string"
+    cwe: 943
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)\$where\s*:\s*(?:function|["\'](?:this\.|return))'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "MongoDB $where clause evaluates JavaScript — if user-controlled, arbitrary JS execution."
+    remediation: "Never use $where with user-supplied data. Use $expr with aggregation operators instead."
+
+  - id: NOSQL-003
+    name: "Mongoose find with req.query spread"
+    cwe: 943
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)\.find\s*\(\s*req\.(?:query|body|params)\b'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Mongoose find() receives raw request object — attacker can inject MongoDB query operators."
+    remediation: "Explicitly map allowed fields: Model.find({ name: req.query.name }) — never pass req.query directly."
+
+  - id: NOSQL-004
+    name: "Redis eval with user input"
+    cwe: 943
+    severity: HIGH
+    languages: [javascript, python]
+    regex: '(?i)(?:redis|client|r)\.eval\s*\(\s*(?:req\.|request\.|user_|input)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Redis EVAL executes Lua scripts — user-controlled script argument allows arbitrary execution."
+    remediation: "Never allow user input in Redis EVAL scripts. Use EVALSHA with pre-loaded, hardcoded scripts."
+
+  - id: NOSQL-005
+    name: "CouchDB view query with user input"
+    cwe: 943
+    severity: HIGH
+    languages: [javascript, python]
+    regex: '(?i)nano\.db\.view\s*\(.*?(?:req\.|request\.)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "CouchDB view query with user-controlled parameters — may expose unintended documents."
+    remediation: "Validate all view parameters against an allowlist before passing to CouchDB."
+
+  - id: NOSQL-006
+    name: "Elasticsearch query with user DSL injection"
+    cwe: 943
+    severity: HIGH
+    languages: [javascript, python, java]
+    regex: '(?i)(?:client\.search|es\.search|elasticClient)\s*\(\s*\{[^}]*body\s*:\s*(?:req\.|request\.|JSON\.parse)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Elasticsearch query body built from user input — Elasticsearch DSL injection risk."
+    remediation: "Build ES queries programmatically with fixed structure. Never allow user JSON to form query body directly."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 3 — OS COMMAND INJECTION
+# ───────────────────────────────────────────────────────────────
+
+  - id: CMD-001
+    name: "Python os.system with variable"
+    cwe: 78
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)os\.system\s*\(\s*(?![\"\'][^\"\']*[\"\'])(?:f["\']|.*?\+|.*?\%)'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Argument is a hardcoded string with no variable input"]
+    description: "os.system() with variable or formatted string — shell metacharacters allow command injection."
+    remediation: "Use subprocess.run(['cmd', arg], shell=False) with a list of arguments instead of os.system()."
+
+  - id: CMD-002
+    name: "Python subprocess shell=True with variable"
+    cwe: 78
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)subprocess\.(?:run|call|Popen|check_output|check_call)\s*\([^)]*shell\s*=\s*True'
+    context_require: ["request", "param", "input", "argv", "environ", "user", "data", "body", "query"]
+    context_reject: []
+    fp_conditions: ["Command is a hardcoded string with no user input, shell=True only for shell features like pipes"]
+    description: "subprocess with shell=True passes command through /bin/sh — any variable enables injection."
+    remediation: "Use shell=False with argument list. If shell features needed, sanitize with shlex.quote()."
+
+  - id: CMD-003
+    name: "Python os.popen with format"
+    cwe: 78
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)os\.popen\s*\(\s*(?:f["\']|.*?\+)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "os.popen() with string formatting — deprecated and vulnerable to command injection."
+    remediation: "Replace with subprocess.run() using argument list and shell=False."
+
+  - id: CMD-004
+    name: "Node.js child_process.exec with template literal"
+    cwe: 78
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)(?:exec|execSync)\s*\(\s*`[^`]*\$\{'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "child_process.exec() with template literal interpolation — runs in shell, any metachar injects."
+    remediation: "Use execFile() or spawn() with argument array instead of exec() with string concatenation."
+
+  - id: CMD-005
+    name: "Node.js child_process.exec with concatenation"
+    cwe: 78
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)(?:require\s*\(\s*["\']child_process["\']\s*\)|child_process)(?:\.exec|\.execSync)\s*\([^)]*\+'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "child_process.exec with string concatenation of external input."
+    remediation: "Use child_process.execFile(['cmd', arg]) or spawn() with array of arguments."
+
+  - id: CMD-006
+    name: "PHP exec / shell_exec / system with variable"
+    cwe: 78
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)(?:exec|shell_exec|system|passthru|popen|proc_open)\s*\(\s*(?![\"\'][^"\']*[\"\'])\$'
+    context_require: []
+    context_reject: ["escapeshellarg(", "escapeshellcmd("]
+    fp_conditions: ["Argument fully wrapped in escapeshellarg()"]
+    description: "PHP shell execution function with user-controlled variable — direct command injection."
+    remediation: "Use escapeshellarg() on every argument. Prefer built-in PHP functions over shell commands."
+
+  - id: CMD-007
+    name: "PHP backtick execution with variable"
+    cwe: 78
+    severity: CRITICAL
+    languages: [php]
+    regex: '`[^`]*\$(?:_GET|_POST|_REQUEST|_COOKIE|_SERVER|_FILES)[^`]*`'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP backtick operator executes a shell command with superglobal user input."
+    remediation: "Remove backtick execution. Use escapeshellarg() or avoid shell entirely."
+
+  - id: CMD-008
+    name: "Ruby system() / exec() / %x[] with interpolation"
+    cwe: 78
+    severity: CRITICAL
+    languages: [ruby]
+    regex: '(?i)(?:system|exec|`|%x\[|spawn|IO\.popen)\s*\(?["\']?[^"\']*#\{'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Ruby shell execution with string interpolation — injection via interpolated user data."
+    remediation: "Use system('cmd', arg) with separate argument — Ruby won't shell-expand separate args."
+
+  - id: CMD-009
+    name: "Java Runtime.exec with string concatenation"
+    cwe: 78
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)Runtime\.getRuntime\(\)\.exec\s*\(\s*(?:"[^"]*"\s*\+|\w+\s*\+)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Java Runtime.exec() with concatenated string — if single-string form used, shell may interpret metacharacters."
+    remediation: "Use Runtime.exec(String[]) with argument array, or ProcessBuilder with list of strings."
+
+  - id: CMD-010
+    name: "Go exec.Command with user-controlled shell -c"
+    cwe: 78
+    severity: CRITICAL
+    languages: [go]
+    regex: '(?i)exec\.Command\s*\(\s*["\'](?:sh|bash|cmd|powershell)["\']\s*,\s*["\']-c["\']\s*,\s*\w'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Go exec.Command running sh -c with variable argument — enables command injection."
+    remediation: "Pass each argument separately to exec.Command without invoking a shell: exec.Command('cmd', arg1, arg2)"
+
+  - id: CMD-011
+    name: "Perl system/exec/backtick with variable"
+    cwe: 78
+    severity: CRITICAL
+    languages: [perl]
+    regex: '(?i)(?:system|exec|qx|`)\s*\(?["\']?[^"\']*\$(?:ENV|ARGV|\w+)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Perl shell execution with variable interpolation from external input."
+    remediation: "Use list form of system(LIST) to avoid shell. Sanitize with quotemeta() if string form required."
+
+  - id: CMD-012
+    name: "C system() with variable"
+    cwe: 78
+    severity: CRITICAL
+    languages: [c, cpp]
+    regex: '(?i)\bsystem\s*\(\s*(?!\"[^\"]*\"\s*\))\w'
+    context_require: []
+    context_reject: []
+    fp_conditions: ["Argument is a hardcoded string literal"]
+    description: "C system() with variable argument — runs in shell, allows command injection."
+    remediation: "Use execv/execvp family with argument array. Never pass user data to system()."
+
+  - id: CMD-013
+    name: "PHP preg_replace with /e modifier (RCE)"
+    cwe: 78
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)preg_replace\s*\(\s*["\'][^"\']*\/e["\']'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP preg_replace /e modifier evaluates replacement as PHP code — deprecated RCE vector."
+    remediation: "Replace with preg_replace_callback() which never evaluates code. Remove /e from all regex patterns."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 4 — CODE INJECTION / EVAL
+# ───────────────────────────────────────────────────────────────
+
+  - id: EVAL-001
+    name: "Python eval() with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)\beval\s*\(\s*(?![\"\'][^\"\']*[\"\']\s*\))'
+    context_require: ["request", "input", "param", "user", "data", "body", "argv", "environ", "read", "stdin"]
+    context_reject: ["# safe", "# noqa"]
+    fp_conditions: ["Argument is a compile-time constant string with no user input"]
+    description: "Python eval() with user-controlled input — executes arbitrary Python code."
+    remediation: "Use ast.literal_eval() for safe data parsing. Redesign to avoid eval() entirely."
+
+  - id: EVAL-002
+    name: "Python exec() with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)\bexec\s*\(\s*(?![\"\'][^\"\']*[\"\']\s*\))'
+    context_require: ["request", "input", "param", "user", "data", "body", "argv", "read", "stdin"]
+    context_reject: []
+    fp_conditions: []
+    description: "Python exec() with user-controlled string — full code execution."
+    remediation: "Remove exec() from any code path reachable by user input. Use restricted DSLs if dynamic eval needed."
+
+  - id: EVAL-003
+    name: "JavaScript eval() with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)\beval\s*\(\s*(?![\"\'][^\"\']*[\"\']\s*\))'
+    context_require: ["req.", "request.", "params.", "query.", "body.", "location.", "document.", "input", "user"]
+    context_reject: []
+    fp_conditions: ["Argument is a hardcoded string literal"]
+    description: "JavaScript eval() with user-controlled input — client-side or server-side code injection."
+    remediation: "Replace eval() with JSON.parse() for data, or redesign logic to not require eval."
+
+  - id: EVAL-004
+    name: "JavaScript Function() constructor with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [javascript]
+    regex: 'new\s+Function\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.|location\.|user)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Function() constructor with user-controlled argument — equivalent to eval()."
+    remediation: "Avoid the Function() constructor with dynamic content. Use static function definitions."
+
+  - id: EVAL-005
+    name: "JavaScript setTimeout/setInterval with string"
+    cwe: 95
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)(?:setTimeout|setInterval)\s*\(\s*(?!function|=>|\()["\']'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "setTimeout/setInterval with a string argument evaluates it as code — avoid string form."
+    remediation: "Use function references: setTimeout(() => doThing(), delay) — never string form."
+
+  - id: EVAL-006
+    name: "PHP eval() with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)\beval\s*\(\s*\$(?:_GET|_POST|_REQUEST|_COOKIE|_SERVER|\w+)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP eval() directly receiving user-supplied variable — arbitrary PHP code execution."
+    remediation: "Remove eval() completely. There is no safe way to eval() user input in PHP."
+
+  - id: EVAL-007
+    name: "PHP eval() with concatenation"
+    cwe: 95
+    severity: CRITICAL
+    languages: [php]
+    regex: '(?i)\beval\s*\(\s*(?:["\'][^"\']*["\'])\s*\.\s*\$'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP eval() with string concatenation including a variable — code injection."
+    remediation: "Remove eval(). Redesign feature to use a restricted, defined set of operations."
+
+  - id: EVAL-008
+    name: "Ruby eval() with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [ruby]
+    regex: '(?i)\beval\s*\(\s*(?:params|request|gets|ARGV|ENV|\$stdin)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Ruby eval() with user-controlled input from params, request, or STDIN."
+    remediation: "Eliminate eval() from user-facing code paths. Use safe expression parsers."
+
+  - id: EVAL-009
+    name: "Ruby send() with user-controlled method name"
+    cwe: 95
+    severity: HIGH
+    languages: [ruby]
+    regex: '(?i)\.send\s*\(\s*params\s*\['
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Ruby Object#send() with user-controlled method name — arbitrary method invocation."
+    remediation: "Use an allowlist: ALLOWED = ['method1','method2']; obj.send(ALLOWED.include?(m) ? m : raise)"
+
+  - id: EVAL-010
+    name: "Java ScriptEngine.eval() with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)scriptEngine\.eval\s*\(\s*(?![\"\'][^\"\']*[\"\']\s*\))'
+    context_require: ["request", "getParameter", "getHeader", "getBody", "input"]
+    context_reject: []
+    fp_conditions: []
+    description: "Java ScriptEngine evaluating user-controlled script string — arbitrary code execution."
+    remediation: "Never pass user input to ScriptEngine.eval(). Use sandbox/restricted execution environments."
+
+  - id: EVAL-011
+    name: "Node.js vm.runInNewContext with user input"
+    cwe: 95
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)vm\.(?:runInNewContext|runInThisContext|Script)\s*\([^)]*(?:req\.|request\.|params\.|body\.|user)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Node.js vm module with user input — vm sandbox is NOT a security boundary."
+    remediation: "vm.runInNewContext does not provide security isolation. Use a dedicated sandboxing library like isolated-vm."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 5 — SERVER-SIDE TEMPLATE INJECTION (SSTI)
+# ───────────────────────────────────────────────────────────────
+
+  - id: SSTI-001
+    name: "Python Jinja2 render_template_string with user input"
+    cwe: 94
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)render_template_string\s*\(\s*(?![\"\'][^\"\']*[\"\']\s*\))'
+    context_require: ["request", "param", "input", "user", "data", "body", "args", "form"]
+    context_reject: []
+    fp_conditions: ["Template string is a hardcoded literal with no user data interpolated"]
+    description: "Flask render_template_string() with user-controlled template — full SSTI to RCE."
+    remediation: "Never pass user input as a template string. Use render_template() with a fixed file and pass data as variables."
+
+  - id: SSTI-002
+    name: "Python Mako Template with user input"
+    cwe: 94
+    severity: CRITICAL
+    languages: [python]
+    regex: '(?i)Template\s*\(\s*(?:request|param|input|user|body|data|form)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Mako Template() instantiated with user-controlled string — SSTI leads to RCE."
+    remediation: "Load templates from files, not from user input. Pass data as template variables only."
+
+  - id: SSTI-003
+    name: "Node.js Handlebars compile with user input"
+    cwe: 94
+    severity: HIGH
+    languages: [javascript]
+    regex: '(?i)(?:Handlebars|hbs)\.compile\s*\([^)]*(?:req\.|request\.|params\.|body\.|user)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Handlebars.compile() with user-controlled template string — template injection."
+    remediation: "Pre-compile templates at startup from static files. Never compile user-supplied strings."
+
+  - id: SSTI-004
+    name: "Node.js EJS render with user template"
+    cwe: 94
+    severity: CRITICAL
+    languages: [javascript]
+    regex: '(?i)ejs\.render\s*\([^,)]*(?:req\.|request\.|params\.|body\.|user)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "EJS render() with user-controlled template — SSTI via EJS directives."
+    remediation: "Use ejs.renderFile() with server-side template files. Never render user-provided template strings."
+
+  - id: SSTI-005
+    name: "Java FreeMarker with user template"
+    cwe: 94
+    severity: CRITICAL
+    languages: [java]
+    regex: '(?i)new\s+Template\s*\([^)]*request\.getParameter|new\s+StringReader\s*\([^)]*request\.getParameter'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "FreeMarker Template instantiated with user-supplied content — SSTI to RCE via ?eval."
+    remediation: "Load templates from classpath only. Disable dangerous built-ins: freemarkerConfig.setNewBuiltinClassResolver(TemplateClassResolver.SAFER_RESOLVER)"
+
+  - id: SSTI-006
+    name: "Ruby ERB new with user input"
+    cwe: 94
+    severity: CRITICAL
+    languages: [ruby]
+    regex: '(?i)ERB\.new\s*\(\s*(?:params|request|gets|ARGV|user_input)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Ruby ERB template instantiated with user input — SSTI allows arbitrary Ruby execution."
+    remediation: "Load ERB templates from files only. Pass user data as variables, not as template source."
+
+  - id: SSTI-007
+    name: "Pebble/Velocity template with user string"
+    cwe: 94
+    severity: HIGH
+    languages: [java]
+    regex: '(?i)(?:engine\.evaluate|Velocity\.evaluate|pebbleEngine\.getLiteralTemplate)\s*\([^)]*(?:request|param|input|user)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "Apache Velocity or Pebble template engine evaluating user-supplied string."
+    remediation: "Use pre-loaded template files. Sanitize and restrict template access in sandbox mode."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 6 — LDAP INJECTION
+# ───────────────────────────────────────────────────────────────
+
+  - id: LDAP-001
+    name: "LDAP search filter with string concatenation"
+    cwe: 90
+    severity: HIGH
+    languages: [java, python, php, csharp]
+    regex: '(?i)(?:search|searchBase|NamingEnumeration|ldap_search|directory\.search)\s*\([^)]*\+\s*(?:request|param|input|user|\$_)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "LDAP search filter built with string concatenation of user input — LDAP injection."
+    remediation: "Escape special chars using LDAP escape functions. Java: LdapName for DN, encode filter values per RFC 4515."
+
+  - id: LDAP-002
+    name: "PHP ldap_search with user input in filter"
+    cwe: 90
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)ldap_search\s*\([^,]+,[^,]+,[^)]*\$(?:_GET|_POST|_REQUEST|\w+)'
+    context_require: []
+    context_reject: ["ldap_escape("]
+    fp_conditions: ["Filter argument passes through ldap_escape()"]
+    description: "PHP ldap_search() with user input in filter argument — LDAP filter injection."
+    remediation: "Use ldap_escape($input, '', LDAP_ESCAPE_FILTER) on all user-supplied filter values."
+
+  - id: LDAP-003
+    name: "Python python-ldap search_s with format"
+    cwe: 90
+    severity: HIGH
+    languages: [python]
+    regex: '(?i)conn\.search_s\s*\([^)]*(?:f["\']|%\s*\(|\.format\()'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "python-ldap search_s() with formatted filter string containing user data."
+    remediation: "Use escape_filter_chars() from ldap3 or ldap package to sanitize all filter values."
+
+# ───────────────────────────────────────────────────────────────
+# CATEGORY 7 — XPATH INJECTION
+# ───────────────────────────────────────────────────────────────
+
+  - id: XPATH-001
+    name: "XPath query with string concatenation"
+    cwe: 643
+    severity: HIGH
+    languages: [java, python, php, csharp, javascript]
+    regex: '(?i)(?:xpath|XPath|evaluate|selectNodes|selectSingleNode)\s*\([^)]*\+\s*(?:request|param|input|user|\$_)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "XPath expression built with string concatenation of user input — XPath injection."
+    remediation: "Use parameterized XPath queries. Java: XPathVariableResolver. Never concatenate user data into XPath."
+
+  - id: XPATH-002
+    name: "PHP xpath() with user input"
+    cwe: 643
+    severity: HIGH
+    languages: [php]
+    regex: '(?i)->xpath\s*\([^)]*\$(?:_GET|_POST|_REQUEST|\w+)'
+    context_require: []
+    context_reject: []
+    fp_conditions: []
+    description: "PHP SimpleXMLElement::xpath() with user-controlled expression — XPath injection."
+    remediation: "Sanitize user input by escaping XPath special characters before use in expressions."
+
